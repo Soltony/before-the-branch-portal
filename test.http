@@ -1,0 +1,9 @@
+POST http://192.168.100.56:8280/nibtera-loan/disbursement
+Authorization: Basic bmliTG9hbjE6MTIzNDU2
+Content-Type: application/json
+
+{
+  "creditAccount": "7000101567082",
+  "providerId": "PRO0001",
+  "amount": "1.00"
+}

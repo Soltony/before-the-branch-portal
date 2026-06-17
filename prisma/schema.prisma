@@ -1,0 +1,954 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+// --------------------------------------
+// AUTH & USERS
+// --------------------------------------
+
+model User {
+  id                          String                @id @default(cuid())
+  fullName                    String
+  email                       String                @unique
+  phoneNumber                 String                @unique
+  password                    String
+  passwordChangeRequired      Boolean               @default(true)
+  status                      String
+  roleId                      String
+  role                        Role                  @relation(fields: [roleId], references: [id])
+  sessions                    Session[]
+  loanProviderId              String?
+  loanProvider                LoanProvider?         @relation(fields: [loanProviderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  branchCode                  Int?
+  createdChanges              PendingChange[]       @relation("CreatedBy")
+  approvedChanges             PendingChange[]       @relation("ApprovedBy")
+  updatedDisbursementControls DisbursementControl[] @relation("DisbursementControlUpdatedBy")
+  recordedTaxTransfers        TaxTransferSimulation[] @relation("TaxTransferRecordedBy")
+  reversedTaxTransfers        TaxTransferSimulation[] @relation("TaxTransferReversedBy")
+  recordedFundReplenishments  FundReplenishment[]     @relation("FundReplenishmentRecordedBy")
+  createdAt                   DateTime              @default(now())
+  updatedAt                   DateTime              @updatedAt
+}
+
+model Role {
+  id          String @id @default(cuid())
+  name        String @unique
+  permissions String @db.NVarChar(Max) // JSON string for permissions
+  users       User[]
+}
+
+// Sessions for refresh-token management and revocation support
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken String   @unique
+  // JTI (JWT ID) of the currently issued access token bound to this DB session.
+  // Used to revoke access tokens by invalidating the stored JTI on logout/rotation.
+  jti          String?
+  revoked      Boolean  @default(false)
+  expiresAt    DateTime // refresh token expiry
+  lastActivity DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([jti])
+}
+
+// --------------------------------------
+// SYSTEM CONTROLS
+// --------------------------------------
+
+// Global kill-switch for all disbursements (external + internal).
+// Single-row table with id = 'global'.
+model DisbursementControl {
+  id          String   @id @default("global")
+  enabled     Boolean  @default(true)
+  updatedById String?
+  updatedBy   User?    @relation("DisbursementControlUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([updatedById])
+}
+
+// --------------------------------------
+// LOAN MANAGEMENT
+// --------------------------------------
+
+model LoanProvider {
+  id                      String                        @id @default(cuid())
+  name                    String                        @unique
+  icon                    String                        @db.Text
+  colorHex                String
+  displayOrder            Int
+  accountNumber           String?
+  collectionAccount       String? // additional field for collection account
+  startingCapital         Float
+  initialBalance          Float
+  allowCrossProviderLoans Boolean                       @default(false)
+  nplThresholdDays        Int                           @default(60)
+  status                  String                        @default("ACTIVE") // ACTIVE, PENDING_APPROVAL
+  products                LoanProduct[]
+  scoringParameters       ScoringParameter[]
+  scoringHistory          ScoringConfigurationHistory[]
+  dataProvisioningConfigs DataProvisioningConfig[]
+  users                   User[]
+  ledgerAccounts          LedgerAccount[]
+  journalEntries          JournalEntry[]
+  termsAndConditions      TermsAndConditions[]
+  distributions           ProviderDistribution[]
+  taxTransfers            TaxTransferSimulation[]       @relation("TaxTransfers")
+  fundReplenishments      FundReplenishment[]           @relation("FundReplenishments")
+}
+
+model ProviderDistribution {
+  id                     String       @id @default(cuid())
+  providerId             String
+  provider               LoanProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  // External provider identifier sent to the upstream distribution service.
+  externalProviderId     String?
+  distributionDate       DateTime
+  interestAmount         Float        @default(0)
+  serviceFeeAmount       Float        @default(0)
+  penaltyAmount          Float        @default(0)
+  taxAmount              Float        @default(0)
+  totalDistributedAmount Float        @default(0)
+  distributionReference  String?
+  createdAt              DateTime     @default(now())
+
+  @@unique([providerId, distributionDate])
+  @@index([distributionDate])
+}
+
+model LoanProduct {
+  id                       String                        @id @default(cuid())
+  providerId               String
+  provider                 LoanProvider                  @relation(fields: [providerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  name                     String
+  description              String
+  icon                     String                        @db.Text
+  minLoan                  Float?
+  maxLoan                  Float?
+  isSalaryAdvance          Boolean                       @default(false)
+  advancePercent           Int?
+  salaryAdvanceMappings    String?                       @db.NVarChar(Max) // JSON: [{ accountNumber, salary }]
+  duration                 Int
+  installments             Int?
+  repaymentIntervalDays    Int?
+  status                   String                        @default("Active") // Active, Disabled, PENDING_APPROVAL
+  allowConcurrentLoans     Boolean                       @default(false)
+  serviceFee               String // JSON FeeRule
+  serviceFeeEnabled        Boolean?
+  dailyFee                 String // JSON FeeRule
+  dailyFeeEnabled          Boolean?
+  penaltyRules             String // JSON array of PenaltyRule
+  penaltyRulesEnabled      Boolean?
+  // If true, penalty rules are applied per installment
+  // (useful for salary-advance products that have installment schedules)
+  penaltyPerInstallment    Boolean?                      @default(false)
+  dataProvisioningEnabled  Boolean?
+  dataProvisioningConfigId String?
+  dataProvisioningConfig   DataProvisioningConfig?       @relation(fields: [dataProvisioningConfigId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  eligibilityFilter        String?                       @db.Text // JSON object for filtering borrowers
+  // Optional Loan Cycle configuration id - controls how much of a tier a borrower can access
+  // loanCycleConfigId and explicit FK were removed to avoid duplicate FKs.
+  // LoanCycleConfig.productId is the single-source foreign key for the relation.
+  loanCycleConfig          LoanCycleConfig?
+  eligibilityUploadId      String?
+  eligibilityUpload        DataProvisioningUpload?       @relation(fields: [eligibilityUploadId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  loans                    Loan[]
+  loanAmountTiers          LoanAmountTier[]
+  scoringConfiguration     ScoringConfigurationProduct[]
+  loanApplications         LoanApplication[]
+  requiredDocuments        RequiredDocument[]
+
+  @@unique([name, providerId])
+}
+
+model LoanCycleConfig {
+  id          String      @id @default(cuid())
+  productId   String      @unique
+  product     LoanProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Metric controlling cycle progression: 'PAID_EARLY' | 'PAID_LATE' | 'TOTAL_COUNT' | 'PAID_ON_TIME'
+  metric      String
+  // Whether product-level cycle feature is enabled
+  enabled     Boolean     @default(true)
+  // JSON array of cycle range descriptors or objects. Example: [{"label":"0-1","min":0,"max":1},{"label":"1-4","min":1,"max":4}]
+  cycleRanges String?     @db.NVarChar(Max)
+  // JSON array of grade rows. Each row should include label, minScore and `percentages` array aligned with cycleRanges.
+  // Example: [{"label":"A","minScore":700,"percentages":[35,50,80]}]
+  grades      String?     @db.NVarChar(Max)
+  // (backwards-compatible) legacy flat cycles list -- preserved for older deployments
+  cycles      String?     @db.NVarChar(Max)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model Loan {
+  id                         String                    @id @default(cuid())
+  borrowerId                 String
+  borrower                   Borrower                  @relation(fields: [borrowerId], references: [id])
+  productId                  String
+  product                    LoanProduct               @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  loanApplicationId          String                    @unique
+  loanApplication            LoanApplication           @relation(fields: [loanApplicationId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  loanAmount                 Float
+  serviceFee                 Float
+  penaltyAmount              Float
+  taxDeducted                Float                     @default(0) // Inclusive tax deducted from principal at disbursement
+  netDisbursedAmount         Float?                    // Net amount actually disbursed (loanAmount - taxDeducted)
+  disbursedDate              DateTime
+  dueDate                    DateTime
+  repaymentStatus            String // Paid, Unpaid
+  repaymentBehavior          String? // ON_TIME, LATE, EARLY
+  repaidAmount               Float?
+  // Interest accrual tracking (for daily ledger accrual)
+  interestAccruedAmount      Float                     @default(0)
+  interestAccruedThroughDate DateTime?
+  // Penalty accrual tracking (for daily ledger accrual)
+  penaltyAccruedAmount       Float                     @default(0)
+  penaltyAccruedThroughDate  DateTime?
+  payments                   Payment[]
+  installments               LoanInstallment[]
+  journalEntries             JournalEntry[]
+  pendingPayments            PendingPayment[]
+  disbursementTransactions   DisbursementTransaction[]
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+}
+
+model Payment {
+  id                              String           @id @default(cuid())
+  loanId                          String
+  loan                            Loan             @relation(fields: [loanId], references: [id])
+  installmentId                   String?
+  installment                     LoanInstallment? @relation(fields: [installmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  amount                          Float
+  date                            DateTime
+  outstandingBalanceBeforePayment Float?
+  journalEntryId                  String?          @unique
+  journalEntry                    JournalEntry?    @relation(fields: [journalEntryId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+}
+
+model LoanInstallment {
+  id                String    @id @default(cuid())
+  loanId            String
+  loan              Loan      @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  installmentNumber Int
+  dueDate           DateTime
+  amount            Float
+  paidAmount        Float?    @default(0)
+  paidAt            DateTime?
+  status            String    @default("PENDING") // PENDING, PAID, LATE
+  penaltyAmount     Float     @default(0)
+  isActive          Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  payments Payment[]
+
+  @@index([loanId])
+  @@index([dueDate])
+}
+
+model Borrower {
+  id                      String                    @id
+  status                  String                    @default("Active") // Active, NPL
+  provisionedData         ProvisionedData[]
+  loans                   Loan[]
+  agreements              BorrowerAgreement[]
+  loanApplications        LoanApplication[]
+  pendingPayments         PendingPayment[]
+  accountStatements       AccountStatement[]
+  accountStatementMetrics AccountStatementMetrics[]
+}
+
+// --------------------------------------
+// LOAN APPLICATION & DOCUMENTS
+// --------------------------------------
+
+model LoanApplication {
+  id                String             @id @default(cuid())
+  borrowerId        String
+  borrower          Borrower           @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  productId         String
+  product           LoanProduct        @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  loanAmount        Float?
+  status            String             @default("PENDING_DOCUMENTS") // PENDING_DOCUMENTS, PENDING_REVIEW, NEEDS_REVISION, APPROVED, DISBURSED
+  rejectionReason   String?            @db.Text
+  loan              Loan?
+  uploadedDocuments UploadedDocument[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model RequiredDocument {
+  id                String             @id @default(cuid())
+  productId         String
+  product           LoanProduct        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name              String
+  description       String?
+  uploadedDocuments UploadedDocument[]
+}
+
+model UploadedDocument {
+  id                 String           @id @default(cuid())
+  loanApplicationId  String
+  application        LoanApplication  @relation(fields: [loanApplicationId], references: [id], onDelete: Cascade)
+  requiredDocumentId String
+  requiredDocument   RequiredDocument @relation(fields: [requiredDocumentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fileName           String
+  fileType           String
+  fileContent        String           @db.Text // Should be a URL in production, Base64 for simplicity
+  status             String           @default("PENDING") // PENDING, APPROVED, REJECTED
+  reviewedBy         String?
+  reviewedAt         DateTime?
+
+  @@unique([loanApplicationId, requiredDocumentId])
+}
+
+// --------------------------------------
+// DATA & SCORING
+// --------------------------------------
+
+model DataProvisioningConfig {
+  id              String                   @id @default(cuid())
+  providerId      String
+  provider        LoanProvider             @relation(fields: [providerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  name            String
+  columns         String                   @db.NVarChar(Max) // JSON array of DataColumn
+  uploads         DataProvisioningUpload[]
+  provisionedData ProvisionedData[]
+  products        LoanProduct[]
+}
+
+model DataProvisioningUpload {
+  id              String                 @id @default(cuid())
+  configId        String
+  config          DataProvisioningConfig @relation(fields: [configId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fileName        String
+  rowCount        Int
+  uploadedBy      String
+  uploadedAt      DateTime               @default(now())
+  provisionedData ProvisionedData[]
+  LoanProduct     LoanProduct[]
+}
+
+model ProvisionedData {
+  id         String                  @id @default(cuid())
+  borrowerId String
+  borrower   Borrower                @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  configId   String
+  config     DataProvisioningConfig  @relation(fields: [configId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  uploadId   String?
+  upload     DataProvisioningUpload? @relation(fields: [uploadId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  data       String // JSON string of the uploaded data for this borrower
+  createdAt  DateTime                @default(now())
+  updatedAt  DateTime                @updatedAt
+
+  // Make provisioned data unique per-upload so we can retain previous uploads
+  // and avoid overwriting older uploaded lists when a new upload is processed.
+  @@unique([borrowerId, configId, uploadId])
+}
+
+model ScoringParameter {
+  id         String       @id @default(cuid())
+  providerId String
+  provider   LoanProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name       String
+  weight     Int
+  rules      Rule[]
+}
+
+model Rule {
+  id          String           @id @default(cuid())
+  parameterId String
+  parameter   ScoringParameter @relation(fields: [parameterId], references: [id], onDelete: Cascade)
+  field       String
+  condition   String
+  value       String
+  score       Int
+}
+
+model LoanAmountTier {
+  id         String      @id @default(cuid())
+  productId  String
+  product    LoanProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fromScore  Int
+  toScore    Int
+  loanAmount Float
+}
+
+model ScoringConfigurationHistory {
+  id              String                        @id @default(cuid())
+  providerId      String
+  provider        LoanProvider                  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  parameters      String                        @db.NVarChar(Max) // JSON string of ScoringParameter[]
+  savedAt         DateTime                      @default(now())
+  appliedProducts ScoringConfigurationProduct[]
+}
+
+model ScoringConfigurationProduct {
+  id         String                      @id @default(cuid())
+  configId   String
+  config     ScoringConfigurationHistory @relation(fields: [configId], references: [id], onDelete: Cascade)
+  productId  String
+  product    LoanProduct                 @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  assignedAt DateTime                    @default(now())
+  assignedBy String
+
+  @@unique([configId, productId])
+}
+
+// --------------------------------------
+// ACCOUNTING
+// --------------------------------------
+
+model LedgerAccount {
+  id         String        @id @default(cuid())
+  providerId String
+  provider   LoanProvider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name       String
+  type       String // Receivable, Received, Income
+  category   String // Principal, Interest, ServiceFee, Penalty, Tax
+  balance    Float         @default(0)
+  entries    LedgerEntry[]
+
+  @@unique([providerId, name])
+}
+
+model JournalEntry {
+  id          String        @id @default(cuid())
+  providerId  String
+  provider    LoanProvider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  loanId      String?
+  loan        Loan?         @relation(fields: [loanId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  date        DateTime
+  description String
+  entries     LedgerEntry[]
+  payment     Payment?
+  taxTransferSimulation TaxTransferSimulation?
+}
+
+model LedgerEntry {
+  id              String        @id @default(cuid())
+  journalEntryId  String
+  journalEntry    JournalEntry  @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  ledgerAccountId String
+  ledgerAccount   LedgerAccount @relation(fields: [ledgerAccountId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  type            String // Debit or Credit
+  amount          Float
+}
+
+// --------------------------------------
+// AGREEMENTS
+// --------------------------------------
+
+model TermsAndConditions {
+  id          String              @id @default(cuid())
+  providerId  String
+  provider    LoanProvider        @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  content     String              @db.Text
+  version     Int
+  isActive    Boolean             @default(false)
+  publishedAt DateTime
+  agreements  BorrowerAgreement[]
+
+  @@unique([providerId, version])
+}
+
+model BorrowerAgreement {
+  id         String             @id @default(cuid())
+  borrowerId String
+  borrower   Borrower           @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  termsId    String
+  terms      TermsAndConditions @relation(fields: [termsId], references: [id], onDelete: Cascade)
+  acceptedAt DateTime           @default(now())
+
+  @@unique([borrowerId, termsId])
+}
+
+// --------------------------------------
+// TAX
+// --------------------------------------
+
+model Tax {
+  id          String  @id @default(cuid())
+  name        String?
+  rate        Float   @default(0)
+  appliedTo   String // JSON string: e.g., ["serviceFee", "interest", "penalty"]
+  isInclusive Boolean @default(false) // If true, tax is deducted from principal before disbursement
+  status      String  @default("ACTIVE") // ACTIVE, PENDING_APPROVAL
+}
+
+// Tax transfer simulation tracking
+model TaxTransferSimulation {
+  id                           String        @id @default(cuid())
+  providerId                   String
+  provider                     LoanProvider  @relation("TaxTransfers", fields: [providerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  transferAmount               Float
+  destinationAccountName       String // Real account name/reference
+  transferReference            String        @unique // Prevent duplicate posting with same reference
+  transferDate                 DateTime
+  journalEntryId               String?       @unique
+  journalEntry                 JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  recordedByUserId             String
+  recordedByUser               User          @relation("TaxTransferRecordedBy", fields: [recordedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  status                       String        @default("SIMULATED") // SIMULATED, REVERSED
+  reversedByUserId             String?
+  reversedByUser               User?         @relation("TaxTransferReversedBy", fields: [reversedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reversalReason               String?       @db.Text
+  reversedAt                   DateTime?
+  notes                        String?       @db.Text
+  createdAt                    DateTime      @default(now())
+  updatedAt                    DateTime      @updatedAt
+
+  @@index([providerId])
+  @@index([transferDate])
+  @@index([status])
+}
+
+// Manual replenishment of provider disbursement fund from collected repayments
+model FundReplenishment {
+  id                String       @id @default(cuid())
+  providerId        String
+  provider          LoanProvider @relation("FundReplenishments", fields: [providerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  amount            Float
+  remarks           String?      @db.Text
+  replenishmentDate DateTime
+  balanceBefore     Float
+  balanceAfter      Float
+  recordedByUserId  String
+  recordedByUser    User         @relation("FundReplenishmentRecordedBy", fields: [recordedByUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([providerId])
+  @@index([replenishmentDate])
+}
+
+// --------------------------------------
+// AUDITING & APPROVALS
+// --------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  action    String
+  entity    String?
+  entityId  String?
+  details   String?  @db.Text
+  ipAddress String?
+  userAgent String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([entity, entityId])
+}
+
+model PendingChange {
+  id              String    @id @default(cuid())
+  entityType      String // e.g., "LoanProvider", "LoanProduct", "Tax"
+  entityId        String? // The ID of the entity being changed. Null for CREATE.
+  changeType      String // CREATE, UPDATE, DELETE
+  payload         String    @db.NVarChar(Max) // JSON payload with the changes
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  createdById     String
+  createdBy       User      @relation("CreatedBy", fields: [createdById], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  approvedById    String?
+  approvedBy      User?     @relation("ApprovedBy", fields: [approvedById], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  approvedAt      DateTime?
+  rejectionReason String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([entityType])
+}
+
+// --------------------------------------
+// PAYMENT GATEWAY
+// --------------------------------------
+model PendingPayment {
+  id            String   @id @default(cuid())
+  transactionId String   @unique
+  loanId        String
+  loan          Loan     @relation(fields: [loanId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  borrowerId    String
+  borrower      Borrower @relation(fields: [borrowerId], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  amount        Float
+  status        String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model PaymentTransaction {
+  id            String   @id @default(cuid())
+  transactionId String   @unique
+  txnRef        String?
+  status        String // e.g., RECEIVED, PROCESSED, FAILED_VALIDATION
+  payload       String   @db.NVarChar(Max)
+  receivedAt    DateTime @default(now())
+}
+
+// Records disbursement requests sent to the external payment/disbursement service
+model DisbursementTransaction {
+  id                 String   @id @default(cuid())
+  transactionId      String? // transaction id returned by upstream, if any
+  loanId             String?
+  loan               Loan?    @relation(fields: [loanId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  providerId         String
+  originalProviderId String? // provider id received from caller before any forced override
+  creditAccount      String
+  amount             Float?
+  disbursementStatus String   @default("PENDING") // PENDING, SENT, SUCCESS, FAILED
+  requestPayload     String   @db.NVarChar(Max)
+  responsePayload    String?  @db.NVarChar(Max)
+  rawResponse        String?  @db.NVarChar(Max)
+  statusCode         Int?
+  createdAt          DateTime @default(now())
+
+  @@index([loanId])
+  @@index([providerId])
+  @@index([transactionId])
+  @@index([disbursementStatus])
+}
+
+// Maps phone numbers to external bank account numbers returned by the
+// external 'get-accounts' service. A phoneNumber can have multiple
+// account entries; at most one may be marked as active for loan use.
+model PhoneAccount {
+  id            String   @id @default(cuid())
+  phoneNumber   String
+  accountNumber String
+  customerName  String?
+  isActive      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([phoneNumber, accountNumber])
+  @@index([phoneNumber])
+}
+
+// Account statements retrieved from the external account-statement service
+model AccountStatement {
+  id             String                 @id @default(cuid())
+  borrowerId     String
+  borrower       Borrower               @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  accountNumber  String
+  customerName   String?
+  currency       String?
+  openingBalance String?
+  closingBalance String?
+  startDate      String?
+  endDate        String?
+  raw            String                 @db.NVarChar(Max) // raw JSON response as string
+  fetchedAt      DateTime               @default(now())
+  lines          AccountStatementLine[]
+
+  @@unique([borrowerId, accountNumber, startDate, endDate])
+  @@index([borrowerId])
+  @@index([accountNumber])
+}
+
+model AccountStatementLine {
+  id             String           @id @default(cuid())
+  statementId    String
+  statement      AccountStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  bookDate       String?
+  reference      String?
+  description    String?
+  narrative      String?
+  valueDate      String?
+  debit          Float?
+  credit         Float?
+  closingBalance Float?
+}
+
+// Precomputed metrics for an account over a specific period (e.g., last 6 months)
+model AccountStatementMetrics {
+  id                       String   @id @default(cuid())
+  borrowerId               String
+  borrower                 Borrower @relation(fields: [borrowerId], references: [id], onDelete: Cascade)
+  accountNumber            String
+  periodStart              String // YYYYMMDD
+  periodEnd                String // YYYYMMDD
+  monthsAtEbirr            Int?
+  txCountRelevant          Int?
+  billPaymentsCount        Int?
+  avgMonthlyDeposit        Float?
+  avgUniqueDepositSources  Float?
+  avgMonthlyAirtimeCount   Float?
+  avgMonthlyAirtimeValue   Float?
+  withdrawalToDepositRatio Float?
+  avgBalance               Float?
+  derived                  String   @db.NVarChar(Max) // JSON for additional metrics
+  computedAt               DateTime @default(now())
+
+  @@unique([borrowerId, accountNumber, periodStart, periodEnd])
+  @@index([borrowerId])
+  @@index([accountNumber])
+}
+
+// --------------------------------------
+// SMS MANAGEMENT
+// --------------------------------------
+
+// SMS Templates for customizable message content
+model SmsTemplate {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  content     String    @db.NVarChar(Max)
+  // Description of available placeholders: {{borrowerName}}, {{loanAmount}}, {{dueDate}}, {{productName}}, {{outstandingAmount}}, {{daysOverdue}}
+  description String?   @db.NVarChar(Max)
+  isActive    Boolean   @default(true)
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  smsLogs     SmsLog[]
+  smsCampaigns SmsCampaign[]
+}
+
+// Individual SMS log records
+model SmsLog {
+  id              String       @id @default(cuid())
+  templateId      String?
+  template        SmsTemplate? @relation(fields: [templateId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  campaignId      String?
+  campaign        SmsCampaign? @relation(fields: [campaignId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recipientPhone  String
+  recipientName   String?
+  loanId          String?
+  productId       String?
+  productName     String?
+  messageContent  String       @db.NVarChar(Max)
+  status          String       @default("PENDING") // PENDING, SENT, DELIVERED, FAILED
+  errorMessage    String?      @db.NVarChar(Max)
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+  retryCount      Int          @default(0)
+  lastRetryAt     DateTime?
+  parentSmsId     String?      // For tracking resends
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([status])
+  @@index([recipientPhone])
+  @@index([loanId])
+  @@index([productId])
+  @@index([campaignId])
+  @@index([createdAt])
+}
+
+// SMS Campaigns for bulk/scheduled sending
+model SmsCampaign {
+  id                String       @id @default(cuid())
+  name              String
+  templateId        String?
+  template          SmsTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  // Targeting criteria stored as JSON
+  targetCriteria    String       @db.NVarChar(Max) // JSON: { productIds: [], loanAgeFrom: number, loanAgeTo: number, overdueFrom: number, overdueTo: number, customDateField: string, customDateFrom: date, customDateTo: date }
+  customMessage     String?      @db.NVarChar(Max) // Optional override message
+  status            String       @default("DRAFT") // DRAFT, SCHEDULED, PROCESSING, COMPLETED, CANCELLED
+  scheduleType      String       @default("IMMEDIATE") // IMMEDIATE, SCHEDULED
+  scheduledAt       DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  totalRecipients   Int          @default(0)
+  sentCount         Int          @default(0)
+  deliveredCount    Int          @default(0)
+  failedCount       Int          @default(0)
+  createdById       String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  smsLogs           SmsLog[]
+
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdAt])
+}
+
+// ================================================= //
+//               LERSHA FARMER INTEGRATION           //
+// ================================================= //
+
+model LershaFarmer {
+  id                           String              @id @default(cuid())
+  farmerId                     String              @unique
+  farmerName                   String
+  phoneNumber                  String
+  kebeleIdDocUrl               String              @db.NVarChar(Max)
+  landCertificateDocUrl        String              @db.NVarChar(Max)
+  totalFarmSizeInHectare       Float
+  cultivatedAreaInHectare      Float
+  primaryCropType              String
+  farmRegistryNumber           String
+  requestedLoanAmount          Float
+  repaymentSource              String
+  requestedLoanTermInMonth     Int
+  applicationChannel           String
+  creditScoreValue             Float
+  scoreCalculationDate         DateTime
+  emergencyContactName         String
+  emergencyContactPhone        String
+  emergencyContactRelationship String
+  emergencyContactAddress      String              @db.NVarChar(Max)
+  status                       String              @default("PENDING")
+  marriageCertificateUrl       String?             @db.NVarChar(Max)
+  address                      String              @db.NVarChar(Max)
+  createdAt                    DateTime            @default(now())
+  updatedAt                    DateTime            @updatedAt
+  loanPurposes                 LershaLoanPurpose[]
+  loanRequests                 LershaLoanRequest[]
+
+  @@index([phoneNumber])
+  @@index([status])
+}
+
+model LershaLoanPurpose {
+  id                  String        @id @default(cuid())
+  farmerId            String
+  farmer              LershaFarmer  @relation(fields: [farmerId], references: [id], onDelete: Cascade)
+  productId           String?       @unique
+  loanPurpose         String
+  specificVarietyName String?
+  quantity            Float?
+  unitOfMeasurement   String?
+  unitPrice           Float?
+  totalCost           Float
+  agroDealerName      String?
+  agroDealerAccountNo String?
+  insuranceName       String?
+  createdAt           DateTime      @default(now())
+
+  @@index([farmerId])
+}
+
+model LershaLoanRequest {
+  id                      String        @id @default(cuid())
+  farmerId                String
+  farmer                  LershaFarmer  @relation(fields: [farmerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  productId               String
+  otp                     String?
+  otpExpiresAt            DateTime?
+  otpVerified             Boolean       @default(false)
+  status                  String        @default("PENDING_OTP") // PENDING_OTP, OTP_VERIFIED, APPROVED, DECLINED, DISBURSED
+  referenceNo             String?       @unique
+  lershaDecisionSentAt    DateTime?
+  lershaDecisionResponse  String?       @db.NVarChar(Max)
+  remainingBalance        Float?
+  disbursementConfirmedAt DateTime?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  @@index([farmerId])
+  @@index([status])
+  @@index([referenceNo])
+}
+
+// ================================================= //
+//          DIGITAL LOAN REPAYMENT (CBS / NPL)       //
+// ================================================= //
+
+// One row per outbound bulk upload of NPL account numbers to the CBS
+// (core banking) "unpaid account bulk upload" endpoint. We persist the
+// snapshot of accounts that were sent and the CBS response so we can
+// audit the daily reconciliation.
+model NplCbsUploadBatch {
+  id                   String   @id @default(cuid())
+  triggeredByUserId    String?  // null when triggered by the scheduled worker
+  source               String   @default("MANUAL") // MANUAL | SCHEDULED
+  status               String   @default("PENDING") // PENDING | SUCCESS | FAILED
+  // Number of accounts we sent (clamped to what we actually pushed).
+  accountsSentCount    Int      @default(0)
+  // Verbatim figures echoed back by the CBS upload endpoint.
+  totalReceived        Int?
+  insertedCount        Int?
+  alreadyExistsCount   Int?
+  httpStatus           Int?
+  errorMessage         String?  @db.NVarChar(Max)
+  // JSON array string of account numbers actually included in the upload.
+  accountNumbers       String   @db.NVarChar(Max)
+  // JSON request and response bodies for traceability.
+  requestPayload       String?  @db.NVarChar(Max)
+  responsePayload      String?  @db.NVarChar(Max)
+  startedAt            DateTime @default(now())
+  finishedAt           DateTime?
+
+  @@index([status])
+  @@index([startedAt])
+}
+
+// One row per credit notification received from the CBS for a previously
+// uploaded NPL account. The notification triggers an immediate auto-repay
+// attempt against the CBS /repay endpoint and a corresponding internal
+// ledger posting via the standard payment pipeline.
+model NplCreditNotification {
+  id                  String   @id @default(cuid())
+  // Notification identity / idempotency.
+  externalReference   String?  @unique // optional id sent by the CBS, used for dedup if present
+  correlationId       String   @unique // uuid we send back to CBS on /repay (also serves as our internal idempotency key)
+  // Inbound payload fields
+  accountNumber       String
+  creditedAmount      Float
+  providerId          String?  // CBS provider code (e.g. PRO0001)
+  rawPayload          String   @db.NVarChar(Max)
+  // Resolution to internal entities (best-effort).
+  borrowerId          String?
+  loanId              String?
+  paymentId           String?
+  // Repay result.
+  processStatus       String   @default("PENDING") // PENDING | REPAID | PARTIAL_REPAID | NO_OUTSTANDING | UNMATCHED_ACCOUNT | DUPLICATE | FAILED
+  resultMessage       String?  @db.NVarChar(Max)
+  // Echo of /repay response.
+  repayHttpStatus     Int?
+  repayTransactionId  String?
+  repayDebitAmount    Float?
+  repayDebitAccount   String?
+  repayCreditAccount  String?
+  repayResponse       String?  @db.NVarChar(Max)
+  // Number of attempts (manual retry support).
+  attempts            Int      @default(0)
+  lastAttemptAt       DateTime?
+  receivedAt          DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([accountNumber])
+  @@index([processStatus])
+  @@index([receivedAt])
+  @@index([loanId])
+}
+
+// ================================================= //
+//            PHONE NUMBER CHANGE REQUESTS           //
+// ================================================= //
+
+model PhoneChangeRequest {
+  id              String    @id @default(cuid())
+  oldPhoneNumber  String
+  newPhoneNumber  String
+  reason          String    @db.NVarChar(Max)
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  requestedById   String
+  approvedById    String?
+  approvedAt      DateTime?
+  rejectionReason String?   @db.Text
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([oldPhoneNumber])
+  @@index([newPhoneNumber])
+}
+
+

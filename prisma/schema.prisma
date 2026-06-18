@@ -837,7 +837,6 @@ model LershaFarmer {
   loanPurposes                 LershaLoanPurpose[]
   loanRequests                 LershaLoanRequest[]
   loanContracts                LoanContract[]
-  insurancePayments            LershaInsurancePayment[]
 
   @@index([phoneNumber])
   @@index([status])
@@ -882,34 +881,6 @@ model LershaLoanRequest {
   @@index([farmerId])
   @@index([status])
   @@index([referenceNo])
-}
-
-// One row per farmer per insurance-payment request. Lersha sends a list of
-// farmerIDs to /api/farmer/insuranceRequest; we resolve each farmer's insurance
-// cost (from the "Insurance" LershaLoanPurpose captured at registration),
-// forward the transformed payload to NIB, and later record the per-farmer
-// result via /api/farmer/insuranceConfirmation.
-model LershaInsurancePayment {
-  id                String       @id @default(cuid())
-  farmerId          String // FK to LershaFarmer.id
-  farmer            LershaFarmer @relation(fields: [farmerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  loanPurposeId     String? // the "Insurance" LershaLoanPurpose that priced this payment
-  insuranceId       String // NIB insurance product id sent in the request payload
-  insuranceName     String?
-  insuranceAmount   Float // amount sent to NIB for this farmer
-  status            String       @default("REQUESTED") // REQUESTED | SUCCESS | FAILED
-  remainingBalance  Float? // remaining loan balance reported on confirmation
-  transactionId     String? // transaction reference from confirmation
-  transactionAmount Float? // amount actually transacted on confirmation
-  requestPayload    String?      @db.NVarChar(Max)
-  responsePayload   String?      @db.NVarChar(Max)
-  requestedAt       DateTime     @default(now())
-  confirmedAt       DateTime?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-
-  @@index([farmerId])
-  @@index([status])
 }
 
 // ================================================= //

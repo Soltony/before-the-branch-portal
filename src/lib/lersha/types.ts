@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LANGUAGE_CODES } from "./contract-languages";
 
 // ============================================================
 // Zod schemas for incoming requests (APIs we expose for Lersha)
@@ -63,6 +64,18 @@ export const otpConfirmationSchema = z.object({
   otp: z.string().min(1),
 });
 
+/** Lersha requests a loan contract in the farmer's chosen language. */
+export const contractRequestSchema = z.object({
+  farmer_id: z.string().min(1),
+  language_code: z.enum(LANGUAGE_CODES),
+});
+
+/** Lersha submits the Contract ID the farmer received via SMS to sign it. */
+export const contractVerifySchema = z.object({
+  farmer_id: z.string().min(1),
+  contract_id: z.string().min(1),
+});
+
 export const hasAccountQuerySchema = z.object({
   phone: z.string().min(1),
 });
@@ -107,3 +120,5 @@ export type DisbursementConfirmationPayload = z.infer<
 export type LershaDisbursementConfirmationPayload = z.infer<
   typeof lershaDisbursementConfirmationPayloadSchema
 >;
+export type ContractRequestInput = z.infer<typeof contractRequestSchema>;
+export type ContractVerifyInput = z.infer<typeof contractVerifySchema>;

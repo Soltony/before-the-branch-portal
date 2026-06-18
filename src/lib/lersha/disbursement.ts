@@ -47,6 +47,16 @@ async function resolveAgricultureProduct() {
 }
 
 /**
+ * Resolve the LoanProvider used by the Lersha farmer flow (the provider whose
+ * loan product Lersha disburses against). Used to locate the right
+ * TermsAndConditions when generating loan contracts.
+ */
+export async function resolveLershaProvider() {
+  const product = await resolveAgricultureProduct();
+  return product?.provider ?? null;
+}
+
+/**
  * Automatically disburse a farmer's loan after OTP verification.
  */
 export async function autoDisburseFarmerLoan(

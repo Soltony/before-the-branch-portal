@@ -27,7 +27,6 @@ model User {
   sessions                    Session[]
   loanProviderId              String?
   loanProvider                LoanProvider?         @relation(fields: [loanProviderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  branchCode                  Int?
   createdChanges              PendingChange[]       @relation("CreatedBy")
   approvedChanges             PendingChange[]       @relation("ApprovedBy")
   updatedDisbursementControls DisbursementControl[] @relation("DisbursementControlUpdatedBy")
@@ -458,12 +457,39 @@ model TermsAndConditions {
   providerId  String
   provider    LoanProvider        @relation(fields: [providerId], references: [id], onDelete: Cascade)
   content     String              @db.Text
+  // Per-language contract content. `content` above remains the legacy/default
+  // fallback so existing single-language consumers keep working.
+  contentAm   String?             @db.NVarChar(Max) // Amharic
+  contentOm   String?             @db.NVarChar(Max) // Afan Oromo
+  contentTi   String?             @db.NVarChar(Max) // Tigrigna
+  contentSo   String?             @db.NVarChar(Max) // Somali
+  contentSid  String?             @db.NVarChar(Max) // Sidama
   version     Int
   isActive    Boolean             @default(false)
   publishedAt DateTime
   agreements  BorrowerAgreement[]
+  loanContracts LoanContract[]
 
   @@unique([providerId, version])
+}
+
+model LoanContract {
+  id              String              @id @default(cuid())
+  farmerId        String
+  farmer          LershaFarmer        @relation(fields: [farmerId], references: [id], onDelete: Cascade)
+  languageCode    String              // am | om | ti | so | sid
+  contractCode    String              @unique // unique Contract ID sent via SMS, e.g. LC-AKX6TU
+  termsId         String?
+  terms           TermsAndConditions? @relation(fields: [termsId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  contractContent String?             @db.NVarChar(Max) // snapshot of chosen-language T&C text
+  status          String              @default("PENDING") // PENDING | SIGNED | EXPIRED
+  signedAt        DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([farmerId])
+  @@index([status])
+  @@index([contractCode])
 }
 
 model BorrowerAgreement {
@@ -810,6 +836,8 @@ model LershaFarmer {
   updatedAt                    DateTime            @updatedAt
   loanPurposes                 LershaLoanPurpose[]
   loanRequests                 LershaLoanRequest[]
+  loanContracts                LoanContract[]
+  insurancePayments            LershaInsurancePayment[]
 
   @@index([phoneNumber])
   @@index([status])
@@ -854,6 +882,34 @@ model LershaLoanRequest {
   @@index([farmerId])
   @@index([status])
   @@index([referenceNo])
+}
+
+// One row per farmer per insurance-payment request. Lersha sends a list of
+// farmerIDs to /api/farmer/insuranceRequest; we resolve each farmer's insurance
+// cost (from the "Insurance" LershaLoanPurpose captured at registration),
+// forward the transformed payload to NIB, and later record the per-farmer
+// result via /api/farmer/insuranceConfirmation.
+model LershaInsurancePayment {
+  id                String       @id @default(cuid())
+  farmerId          String // FK to LershaFarmer.id
+  farmer            LershaFarmer @relation(fields: [farmerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  loanPurposeId     String? // the "Insurance" LershaLoanPurpose that priced this payment
+  insuranceId       String // NIB insurance product id sent in the request payload
+  insuranceName     String?
+  insuranceAmount   Float // amount sent to NIB for this farmer
+  status            String       @default("REQUESTED") // REQUESTED | SUCCESS | FAILED
+  remainingBalance  Float? // remaining loan balance reported on confirmation
+  transactionId     String? // transaction reference from confirmation
+  transactionAmount Float? // amount actually transacted on confirmation
+  requestPayload    String?      @db.NVarChar(Max)
+  responsePayload   String?      @db.NVarChar(Max)
+  requestedAt       DateTime     @default(now())
+  confirmedAt       DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([farmerId])
+  @@index([status])
 }
 
 // ================================================= //

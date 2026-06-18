@@ -1456,7 +1456,15 @@ async function applyChange(
       break;
     case "TermsAndConditions":
       await prisma.$transaction(async (tx) => {
-        const { providerId, content } = data.updated;
+        const {
+          providerId,
+          content,
+          contentAm,
+          contentOm,
+          contentTi,
+          contentSo,
+          contentSid,
+        } = data.updated;
         await tx.termsAndConditions.updateMany({
           where: { providerId },
           data: { isActive: false },
@@ -1472,6 +1480,11 @@ async function applyChange(
           data: {
             providerId,
             content,
+            contentAm: contentAm ?? null,
+            contentOm: contentOm ?? null,
+            contentTi: contentTi ?? null,
+            contentSo: contentSo ?? null,
+            contentSid: contentSid ?? null,
             version: newVersionNumber,
             isActive: true,
             publishedAt: new Date(),

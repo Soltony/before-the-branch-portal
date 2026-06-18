@@ -1,0 +1,584 @@
+{
+	"info": {
+		"_postman_id": "nib-lersha-integration-v1",
+		"name": "NIB Lersha Integration API",
+		"description": "API collection for the NIB MicroCredit – Lersha farmer loan integration.\n\nThis collection contains all endpoints exposed by NIB for Lersha to consume.\n\n## Flow\n1. **Register Farmers** – Send farmer details via `sendFarmerDetail`\n2. **Check Account** – Verify if a farmer has a bank account for their phone via `hasAccount` (core-banking lookup)\n3. **Get Contract Content** – Fetch the loan contract (T&C) text in the farmer's chosen language for review\n4. **Request Contract** – NIB generates a unique **Contract ID** and SMSs it to the farmer\n5. **Verify Contract** – Submit the Contract ID to **sign** the contract (status → `SIGNED`)\n6. **Request Loan** – Initiate a loan request; **requires a signed contract**, then an OTP is sent to the farmer's phone\n7. **Confirm OTP** – Verify the OTP, then NIB **automatically** disburses the loan and notifies Lersha via `POST /api/v1/nib/disbursement-confirmation` with `{ farmer_id, remaing_balance }` (Lersha field name)\n8. **Confirm Disbursement** *(optional)* – Manual retry/reconciliation only; not required in the normal flow\n\n## Farmer approval (not an API in this collection)\nA farmer must be **approved by an admin on the NIB farmer page** before a loan contract can be issued (step 4) and before any loan can be requested (step 6). Approval is an internal admin action and is intentionally **not** exposed as part of this integration API.\n\n## Loan contract step (steps 3–5)\nAfter a farmer is approved and before a loan can be processed, the multilingual loan contract must be presented and signed. The contract content is the active **Terms & Conditions** configured per language in Admin → Settings → Borrower Agreement (Amharic, Afan Oromo, Tigrigna, Somali, Sidama).\n\n## Lersha callback (server-to-server, not in this collection)\nAfter step 7, NIB calls Lersha:\n- `POST {LERSHA_API_BASE_URL}/nib/disbursement-confirmation`\n- Body: `{ \"farmer_id\": \"...\", \"remaing_balance\": 50000 }`\n\n## Collection Variables\n- `base_url` – NIB API base URL (e.g. `http://localhost:3004`)\n- `farmer_id` – Set after registration\n- `product_id` – Set after registration\n- `language_code` – Contract language: `am` | `om` | `ti` | `so` | `sid`\n- `contract_code` – Contract ID; auto-set after Request Contract (non-prod), else read from SMS\n- `request_id` – Set after loan request\n- `otp` – Enter manually from SMS\n- `reference_no` – Set after OTP confirmation\n- `loan_id` – Set after successful auto-disbursement\n- `remaining_balance` – Set after successful auto-disbursement",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "basic",
+		"basic": [
+			{
+				"key": "username",
+				"value": "NibLoan",
+				"type": "string"
+			},
+			{
+				"key": "password",
+				"value": "Nib123",
+				"type": "string"
+			}
+		]
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3004",
+			"type": "string"
+		},
+		{
+			"key": "farmer_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "product_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "language_code",
+			"value": "om",
+			"type": "string"
+		},
+		{
+			"key": "contract_code",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "request_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "otp",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "reference_no",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "loan_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "remaining_balance",
+			"value": "50000",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "1. Register Farmer Details",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 201) {",
+							"    const body = pm.response.json();",
+							"    if (body.results && body.results.length > 0) {",
+							"        pm.collectionVariables.set('farmer_id', body.results[0].farmerId);",
+							"        console.log('farmer_id set to: ' + body.results[0].farmerId);",
+							"        // Auto-capture the first non-null productId for loan request step",
+							"        const purposes = body.results[0].loanPurposes || [];",
+							"        const firstProduct = purposes.find(p => p.productId !== null);",
+							"        if (firstProduct) {",
+							"            pm.collectionVariables.set('product_id', firstProduct.productId);",
+							"            console.log('product_id set to: ' + firstProduct.productId);",
+							"        }",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "[\n  {\n    \"farmerId\": \"FARMER-001\",\n    \"farmerName\": \"Abebe Kebede\",\n    \"phoneNumber\": \"+251911000001\",\n    \"kebeleIdDocUrl\": \"https://docs.example.com/kebele/farmer-001.pdf\",\n    \"landCertificateDocUrl\": \"https://docs.example.com/land/farmer-001.pdf\",\n    \"totalFarmSizeInHectare\": 3.5,\n    \"cultivatedAreaInHectare\": 2.0,\n    \"primaryCropType\": \"Wheat\",\n    \"farmRegistryNumber\": \"FR-2026-001\",\n    \"requestedLoanAmount\": 50000,\n    \"repaymentSource\": \"Crop Sale\",\n    \"requestedLoanTermInMonth\": 12,\n    \"applicationChannel\": \"Lersha\",\n    \"creditScoreValue\": 720,\n    \"scoreCalculationDate\": \"2026-03-15T00:00:00.000Z\",\n    \"emergencyContactName\": \"Almaz Kebede\",\n    \"emergencyContactPhone\": \"+251911000002\",\n    \"emergencyContactRelationship\": \"Spouse\",\n    \"emergencyContactAddress\": \"Addis Ababa, Bole Sub City\",\n    \"status\": \"PENDING\",\n    \"marriageCertificateUrl\": \"https://docs.example.com/marriage/farmer-001.pdf\",\n    \"address\": \"Oromia, West Shewa Zone, Ambo Woreda\",\n    \"loanPurposes\": [\n      {\n        \"loanPurpose\": \"Fertilizer\",\n        \"specificVarietyName\": \"DAP\",\n        \"quantity\": 5,\n        \"unitOfMeasurement\": \"Quintal\",\n        \"unitPrice\": 4500,\n        \"totalCost\": 22500,\n        \"agro_dealer\": {\n          \"agro_dealer_name\": \"Green Fields Agro\",\n          \"agro_dealer_account_number\": \"1000123456789\"\n        }\n      },\n      {\n        \"loanPurpose\": \"Seed\",\n        \"specificVarietyName\": \"Improved Wheat Seed\",\n        \"quantity\": 3,\n        \"unitOfMeasurement\": \"Quintal\",\n        \"unitPrice\": 5000,\n        \"totalCost\": 15000,\n        \"agro_dealer\": {\n          \"agro_dealer_name\": \"Seed Corp Ethiopia\",\n          \"agro_dealer_account_number\": \"1000987654321\"\n        }\n      },\n      {\n        \"loanPurpose\": \"Insurance\",\n        \"totalCost\": 12500,\n        \"Insurance\": {\n          \"insurance_name\": \"Ethio Life Insurance\"\n        }\n      }\n    ]\n  }\n]",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/farmer/sendFarmerDetail",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "sendFarmerDetail"]
+				},
+				"description": "Register one or more farmer details into the NIB system.\n\nThe payload is a **JSON array** of farmer objects. Each farmer must include:\n- Personal details (name, phone, address)\n- Farm information (size, crop type, registry number)\n- Documents (kebele ID URL, land certificate URL)\n- Loan info (amount, term, repayment source)\n- Credit score data\n- Emergency contact\n- At least one loan purpose item\n\n### Loan Purpose Types\n- **Fertilizer / Seed / etc.** — requires `agro_dealer` object with dealer name and account number\n- **Insurance** — requires `Insurance` object with `insurance_name`\n\n### Response (201)\n```json\n{\n  \"message\": \"Farmer details registered successfully\",\n  \"results\": [\n    { \"farmerId\": \"FARMER-001\", \"status\": \"REGISTERED\" }\n  ]\n}\n```"
+			},
+			"response": [
+				{
+					"name": "201 - Farmer Registered Successfully",
+					"originalRequest": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "[{\"farmerId\":\"FARMER-001\",\"farmerName\":\"Abebe Kebede\",\"phoneNumber\":\"+251911000001\",\"kebeleIdDocUrl\":\"https://docs.example.com/kebele/farmer-001.pdf\",\"landCertificateDocUrl\":\"https://docs.example.com/land/farmer-001.pdf\",\"totalFarmSizeInHectare\":3.5,\"cultivatedAreaInHectare\":2.0,\"primaryCropType\":\"Wheat\",\"farmRegistryNumber\":\"FR-2026-001\",\"requestedLoanAmount\":50000,\"repaymentSource\":\"Crop Sale\",\"requestedLoanTermInMonth\":12,\"applicationChannel\":\"Lersha\",\"creditScoreValue\":720,\"scoreCalculationDate\":\"2026-03-15T00:00:00.000Z\",\"emergencyContactName\":\"Almaz Kebede\",\"emergencyContactPhone\":\"+251911000002\",\"emergencyContactRelationship\":\"Spouse\",\"emergencyContactAddress\":\"Addis Ababa, Bole Sub City\",\"status\":\"PENDING\",\"address\":\"Oromia, West Shewa Zone\",\"loanPurposes\":[{\"loanPurpose\":\"Fertilizer\",\"specificVarietyName\":\"DAP\",\"quantity\":5,\"unitOfMeasurement\":\"Quintal\",\"unitPrice\":4500,\"totalCost\":22500,\"agro_dealer\":{\"agro_dealer_name\":\"Green Fields Agro\",\"agro_dealer_account_number\":\"1000123456789\"}}]}]"
+						},
+						"url": { "raw": "{{base_url}}/api/farmer/sendFarmerDetail", "host": ["{{base_url}}"], "path": ["api","farmer","sendFarmerDetail"] }
+					},
+					"status": "Created",
+					"code": 201,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"Farmer details registered successfully\",\n  \"results\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"status\": \"REGISTERED\",\n      \"loanPurposes\": [\n        { \"productId\": \"a1b2c3d4-...\", \"loanPurpose\": \"Fertilizer\" },\n        { \"productId\": \"e5f6g7h8-...\", \"loanPurpose\": \"Seed\" },\n        { \"productId\": null, \"loanPurpose\": \"Insurance\" }\n      ]\n    }\n  ]\n}"
+				},
+				{
+					"name": "400 - Validation Error",
+					"status": "Bad Request",
+					"code": 400,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Validation failed\",\n  \"details\": {\n    \"formErrors\": [],\n    \"fieldErrors\": {\n      \"0.phoneNumber\": [\"Required\"]\n    }\n  }\n}"
+				}
+			]
+		},
+		{
+			"name": "2. Check Farmer Account",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/farmer/hasAccount?phone=+251911000001",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "hasAccount"],
+					"query": [
+						{
+							"key": "phone",
+							"value": "+251911000001",
+							"description": "Farmer's phone number (with country code)"
+						}
+					]
+				},
+				"description": "Check whether a farmer has a National Bank account linked to their phone number.\n\nUses the same core-banking lookup as phone–account association in the mini-app (`POST /api/loan-accounts`). If the banking service returns one or more accounts for the phone, `hasAccount` is `true`; otherwise `false`.\n\n### Query Parameters\n| Parameter | Type   | Required | Description |\n|-----------|--------|----------|-------------|\n| `phone`   | string | Yes      | Farmer's phone number (e.g. `+251911000001`) |\n\n### Response – Account Found (200)\n```json\n{\n  \"hasAccount\": true\n}\n```\n\n### Response – No Account (200)\n```json\n{\n  \"hasAccount\": false\n}\n```\n\n### Response – Banking Service Unavailable (502)\n```json\n{\n  \"error\": \"Unable to verify account with banking service.\"\n}\n```"
+			},
+			"response": [
+				{
+					"name": "200 - Account Found",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"hasAccount\": true\n}"
+				},
+				{
+					"name": "200 - No Account",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"hasAccount\": false\n}"
+				},
+				{
+					"name": "400 - Missing Phone",
+					"status": "Bad Request",
+					"code": 400,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Missing or invalid 'phone' query parameter.\"\n}"
+				},
+				{
+					"name": "502 - Banking Service Error",
+					"status": "Bad Gateway",
+					"code": 502,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Unable to verify account with banking service.\"\n}"
+				}
+			]
+		},
+		{
+			"name": "3. Get Loan Contract Content",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/farmer/contract/content?farmer_id={{farmer_id}}&language_code={{language_code}}",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "contract", "content"],
+					"query": [
+						{
+							"key": "farmer_id",
+							"value": "{{farmer_id}}"
+						},
+						{
+							"key": "language_code",
+							"value": "{{language_code}}",
+							"description": "am (Amharic) | om (Afan Oromo) | ti (Tigrigna) | so (Somali) | sid (Sidama)"
+						}
+					]
+				},
+				"description": "Diagram steps 1–2: fetch the active loan contract (Terms & Conditions) text in the farmer's chosen language so the agent can display and review it with the farmer.\n\nThe farmer must already be approved by an admin on the NIB farmer page. Falls back to the default content when the requested language has not been configured in Settings.\n\n### Query Parameters\n| Parameter       | Type   | Required | Description |\n|-----------------|--------|----------|-------------|\n| `farmer_id`     | string | Yes      | The unique farmer ID |\n| `language_code` | string | Yes      | `am` \\| `om` \\| `ti` \\| `so` \\| `sid` |\n\n### Response (200)\n```json\n{\n  \"farmerId\": \"FARMER-001\",\n  \"languageCode\": \"om\",\n  \"languageLabel\": \"Afan Oromo\",\n  \"version\": 3,\n  \"content\": \"<contract text in Afan Oromo>\"\n}\n```"
+			},
+			"response": [
+				{
+					"name": "200 - Contract Content",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"farmerId\": \"FARMER-001\",\n  \"languageCode\": \"om\",\n  \"languageLabel\": \"Afan Oromo\",\n  \"version\": 3,\n  \"content\": \"Waliigaltee liqii ...\"\n}"
+				},
+				{
+					"name": "404 - No Active Terms Configured",
+					"status": "Not Found",
+					"code": 404,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"No active terms and conditions are configured.\"\n}"
+				}
+			]
+		},
+		{
+			"name": "4. Request Loan Contract (Generate Contract ID)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 201) {",
+							"    const body = pm.response.json();",
+							"    if (body.contractCode) {",
+							"        pm.collectionVariables.set('contract_code', body.contractCode);",
+							"        console.log('contract_code set to: ' + body.contractCode);",
+							"    } else {",
+							"        console.log('No contractCode in response (hidden in production). Read it from the SMS and set the {{contract_code}} variable manually.');",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"farmer_id\": \"{{farmer_id}}\",\n  \"language_code\": \"{{language_code}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/farmer/contract/request",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "contract", "request"]
+				},
+				"description": "Diagram steps 3–4: NIB generates a unique **Contract ID**, snapshots the chosen-language contract, and **sends the Contract ID to the farmer's registered phone via SMS**. The farmer must be `APPROVED` (by an admin on the NIB farmer page).\n\n### Request Body\n| Field           | Type   | Required | Description |\n|-----------------|--------|----------|-------------|\n| `farmer_id`     | string | Yes      | The unique farmer ID |\n| `language_code` | string | Yes      | `am` \\| `om` \\| `ti` \\| `so` \\| `sid` |\n\n### Response (201)\n```json\n{\n  \"message\": \"Contract ID sent to farmer's registered phone number.\",\n  \"farmerId\": \"FARMER-001\",\n  \"languageCode\": \"om\",\n  \"status\": \"PENDING\",\n  \"smsSent\": true,\n  \"contractCode\": \"LC-AKX6TU\"\n}\n```\n\n> `contractCode` is returned only outside production (`NODE_ENV !== 'production'`) to ease testing; in production read it from the SMS. The test script auto-saves it to `{{contract_code}}` when present.\n\n### Errors\n| Code | Meaning |\n|------|--------|\n| 403  | Farmer not approved |\n| 404  | Farmer not found |\n| 409  | No active terms & conditions configured |"
+			},
+			"response": [
+				{
+					"name": "201 - Contract ID Sent",
+					"status": "Created",
+					"code": 201,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"Contract ID sent to farmer's registered phone number.\",\n  \"farmerId\": \"FARMER-001\",\n  \"languageCode\": \"om\",\n  \"status\": \"PENDING\",\n  \"smsSent\": true,\n  \"contractCode\": \"LC-AKX6TU\"\n}"
+				},
+				{
+					"name": "403 - Farmer Not Approved",
+					"status": "Forbidden",
+					"code": 403,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Farmer registration is not approved. Contracts cannot be issued yet.\"\n}"
+				},
+				{
+					"name": "409 - No Active Terms",
+					"status": "Conflict",
+					"code": 409,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"No active terms and conditions are configured.\"\n}"
+				}
+			]
+		},
+		{
+			"name": "5. Verify Contract ID (Sign Contract)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"farmer_id\": \"{{farmer_id}}\",\n  \"contract_id\": \"{{contract_code}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/farmer/contract/verify",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "contract", "verify"]
+				},
+				"description": "Diagram steps 5–6: the agent submits the Contract ID the farmer received via SMS. NIB validates it against the farmer's pending contract and marks it **SIGNED**. Only after this can the loan be processed (step 6).\n\n### Request Body\n| Field         | Type   | Required | Description |\n|---------------|--------|----------|-------------|\n| `farmer_id`   | string | Yes      | The unique farmer ID |\n| `contract_id` | string | Yes      | The Contract ID from the SMS (`{{contract_code}}`) |\n\n### Response (200)\n```json\n{\n  \"message\": \"Contract ID validated. Contract signed.\",\n  \"farmerId\": \"FARMER-001\",\n  \"status\": \"SIGNED\",\n  \"signedAt\": \"2026-06-17T10:00:00.000Z\"\n}\n```\n\n### Errors\n| Code | Meaning |\n|------|--------|\n| 404  | Invalid Contract ID for this farmer |\n| 409  | Contract already signed / not pending |"
+			},
+			"response": [
+				{
+					"name": "200 - Contract Signed",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"Contract ID validated. Contract signed.\",\n  \"farmerId\": \"FARMER-001\",\n  \"status\": \"SIGNED\",\n  \"signedAt\": \"2026-06-17T10:00:00.000Z\"\n}"
+				},
+				{
+					"name": "404 - Invalid Contract ID",
+					"status": "Not Found",
+					"code": 404,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Invalid Contract ID for this farmer.\"\n}"
+				},
+				{
+					"name": "409 - Already Signed",
+					"status": "Conflict",
+					"code": 409,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"This contract has already been signed.\"\n}"
+				}
+			]
+		},
+		{
+			"name": "6. Request Loan (Send OTP)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 201) {",
+							"    const body = pm.response.json();",
+							"    if (body.requestId) {",
+							"        pm.collectionVariables.set('request_id', body.requestId);",
+							"        console.log('request_id set to: ' + body.requestId);",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"farmer_id\": \"{{farmer_id}}\",\n  \"product_id\": \"{{product_id}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/farmer/loanRequest",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "loanRequest"]
+				},
+				"description": "Initiate a loan request for a registered farmer. **Requires a SIGNED loan contract (steps 4–5)** — otherwise the request is rejected with 403. On success an OTP is sent to the farmer's registered phone number via SMS.\n\n### Request Body\n| Field        | Type   | Required | Description |\n|--------------|--------|----------|-------------|\n| `farmer_id`  | string | Yes      | The unique farmer ID (from registration) |\n| `product_id` | string | Yes      | The product/loan-purpose ID assigned during registration |\n\n### Response (201)\n```json\n{\n  \"message\": \"OTP sent to farmer's registered phone number.\",\n  \"requestId\": \"clxyz...\",\n  \"expiresAt\": \"2026-03-27T12:05:00.000Z\",\n  \"smsSent\": true\n}\n```\n\n> **Note:** The `requestId` is required for the OTP confirmation step. The OTP expires in **5 minutes**."
+			},
+			"response": [
+				{
+					"name": "201 - OTP Sent",
+					"status": "Created",
+					"code": 201,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"OTP sent to farmer's registered phone number.\",\n  \"requestId\": \"clxyz123abc\",\n  \"expiresAt\": \"2026-03-27T12:05:00.000Z\",\n  \"smsSent\": true\n}"
+				},
+				{
+					"name": "403 - Signed Contract Required",
+					"status": "Forbidden",
+					"code": 403,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"A signed loan contract is required before processing this loan. Please complete the loan contract step first.\"\n}"
+				},
+				{
+					"name": "404 - Farmer Not Found",
+					"status": "Not Found",
+					"code": 404,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Farmer not found. Please register the farmer first.\"\n}"
+				},
+				{
+					"name": "400 - Invalid Product ID",
+					"status": "Bad Request",
+					"code": 400,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Invalid product_id for this farmer.\"\n}"
+				}
+			]
+		},
+		{
+			"name": "7. Confirm OTP (Auto Disbursement)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 200) {",
+							"    const body = pm.response.json();",
+							"    if (body.referenceNo) {",
+							"        pm.collectionVariables.set('reference_no', body.referenceNo);",
+							"        console.log('reference_no set to: ' + body.referenceNo);",
+							"    }",
+							"    if (body.disbursement) {",
+							"        if (body.disbursement.loanId) {",
+							"            pm.collectionVariables.set('loan_id', body.disbursement.loanId);",
+							"            console.log('loan_id set to: ' + body.disbursement.loanId);",
+							"        }",
+							"        if (body.disbursement.remainingBalance !== undefined) {",
+							"            pm.collectionVariables.set('remaining_balance', String(body.disbursement.remainingBalance));",
+							"            console.log('remaining_balance set to: ' + body.disbursement.remainingBalance);",
+							"        }",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"uniqueRequestIdentifier\": \"{{request_id}}\",\n  \"otp\": \"{{otp}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/farmer/OtpConfirmation",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "OtpConfirmation"]
+				},
+				"description": "Verify the OTP, then NIB **automatically** disburses the loan and notifies Lersha.\n\n### What happens on success\n1. OTP is verified and a `referenceNo` is assigned\n2. Loan is auto-disbursed (borrower, loan record, journal entries)\n3. NIB calls Lersha `POST /api/v1/nib/disbursement-confirmation` with:\n   ```json\n   { \"farmer_id\": \"FARMER-001\", \"remaing_balance\": 50000 }\n   ```\n   (`remaing_balance` is the field name in Lersha's API; value is the farmer's `requestedLoanAmount` rounded.)\n\n### Request Body\n| Field                       | Type   | Required | Description |\n|-----------------------------|--------|----------|-------------|\n| `uniqueRequestIdentifier`   | string | Yes      | The `requestId` from step 6 |\n| `otp`                       | string | Yes      | 6-character OTP from SMS |\n\n### Response (200) – full success\n```json\n{\n  \"message\": \"OTP verified and loan disbursed successfully.\",\n  \"referenceNo\": \"REF1711540200-A1B2C3D4\",\n  \"status\": \"DISBURSED\",\n  \"disbursement\": {\n    \"success\": true,\n    \"message\": \"Loan disbursed successfully\",\n    \"loanId\": \"clxyz...\",\n    \"remainingBalance\": 50000,\n    \"lershaNotified\": true\n  }\n}\n```\n\n### Response (200) – OTP ok, disbursement failed\n```json\n{\n  \"message\": \"OTP verified successfully, but loan disbursement failed.\",\n  \"referenceNo\": \"REF...\",\n  \"status\": \"OTP_VERIFIED\",\n  \"disbursement\": {\n    \"success\": false,\n    \"message\": \"No active agriculture LoanProduct found...\",\n    \"lershaNotified\": false,\n    \"error\": \"NO_AGRICULTURE_PRODUCT\"\n  }\n}\n```\n\n### Error Codes\n| Code | Meaning |\n|------|--------|\n| 401  | Invalid OTP |\n| 404  | Loan request not found |\n| 409  | OTP already verified |\n| 410  | OTP expired |"
+			},
+			"response": [
+				{
+					"name": "200 - OTP Verified and Disbursed",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"OTP verified and loan disbursed successfully.\",\n  \"referenceNo\": \"REF1711540200-A1B2C3D4\",\n  \"status\": \"DISBURSED\",\n  \"disbursement\": {\n    \"success\": true,\n    \"message\": \"Loan disbursed successfully\",\n    \"loanId\": \"clxyz123loan\",\n    \"remainingBalance\": 50000,\n    \"lershaNotified\": true\n  }\n}"
+				},
+				{
+					"name": "200 - OTP Verified, Disbursement Failed",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"OTP verified successfully, but loan disbursement failed.\",\n  \"referenceNo\": \"REF1711540200-A1B2C3D4\",\n  \"status\": \"OTP_VERIFIED\",\n  \"disbursement\": {\n    \"success\": false,\n    \"message\": \"No active agriculture LoanProduct found. Please configure a LoanProduct first.\",\n    \"lershaNotified\": false,\n    \"error\": \"NO_AGRICULTURE_PRODUCT\"\n  }\n}"
+				},
+				{
+					"name": "401 - Invalid OTP",
+					"status": "Unauthorized",
+					"code": 401,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Invalid OTP.\"\n}"
+				},
+				{
+					"name": "404 - Request Not Found",
+					"status": "Not Found",
+					"code": 404,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Loan request not found.\"\n}"
+				},
+				{
+					"name": "409 - Already Verified",
+					"status": "Conflict",
+					"code": 409,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"OTP has already been verified for this request.\"\n}"
+				},
+				{
+					"name": "410 - OTP Expired",
+					"status": "Gone",
+					"code": 410,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"OTP has expired. Please request a new loan.\"\n}"
+				}
+			]
+		},
+		{
+			"name": "8. Confirm Disbursement (Optional)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"farmer_id\": \"{{farmer_id}}\",\n  \"remaining_balance\": {{remaining_balance}}\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/farmer/disbursement",
+					"host": ["{{base_url}}"],
+					"path": ["api", "farmer", "disbursement"]
+				},
+				"description": "**Optional — not required in the normal flow.**\n\nStep 7 already auto-disburses the loan and notifies Lersha via `POST /api/v1/nib/disbursement-confirmation`. Use this endpoint only for **manual retry or reconciliation** when auto-disbursement succeeded locally but Lersha was not notified (`lershaNotified: false`), or when re-sending confirmation with an updated balance.\n\n### Request Body\n| Field               | Type   | Required | Description |\n|---------------------|--------|----------|-------------|\n| `farmer_id`         | string | Yes      | The unique farmer ID |\n| `remaining_balance` | number | Yes      | Remaining loan balance (NIB maps to Lersha `remaing_balance`) |\n\n### Response (200)\n```json\n{\n  \"message\": \"Disbursement confirmed and Lersha notified.\",\n  \"loanRequestId\": \"clxyz123abc\",\n  \"remainingBalance\": 50000,\n  \"lershaNotified\": true\n}\n```\n\n> Set collection variable `remaining_balance` from step 7, or enter a number manually."
+			},
+			"response": [
+				{
+					"name": "200 - Disbursement Confirmed",
+					"status": "OK",
+					"code": 200,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"message\": \"Disbursement confirmed and Lersha notified.\",\n  \"loanRequestId\": \"clxyz123abc\",\n  \"remainingBalance\": 50000,\n  \"lershaNotified\": true\n}"
+				},
+				{
+					"name": "404 - Farmer Not Found",
+					"status": "Not Found",
+					"code": 404,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"Farmer not found.\"\n}"
+				},
+				{
+					"name": "404 - No Approved Loan",
+					"status": "Not Found",
+					"code": 404,
+					"header": [{ "key": "Content-Type", "value": "application/json" }],
+					"body": "{\n  \"error\": \"No approved loan request found for this farmer.\"\n}"
+				}
+			]
+		}
+	]
+}

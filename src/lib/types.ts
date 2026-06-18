@@ -400,6 +400,11 @@ export interface TermsAndConditions {
   id: string;
   providerId: string;
   content: string;
+  contentAm?: string | null;
+  contentOm?: string | null;
+  contentTi?: string | null;
+  contentSo?: string | null;
+  contentSid?: string | null;
   version: number;
   isActive: boolean;
   publishedAt: Date;

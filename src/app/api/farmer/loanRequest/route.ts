@@ -65,6 +65,24 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // A signed loan contract is a prerequisite to processing the loan.
+    const signedContract = await prisma.loanContract.findFirst({
+      where: { farmerId: farmer.id, status: "SIGNED" },
+      orderBy: { signedAt: "desc" },
+    });
+    if (!signedContract) {
+      console.warn("[loanRequest] No signed loan contract for farmer:", {
+        farmer_id,
+      });
+      return NextResponse.json(
+        {
+          error:
+            "A signed loan contract is required before processing this loan. Please complete the loan contract step first.",
+        },
+        { status: 403 },
+      );
+    }
+
     // Verify the product_id belongs to this farmer's loan purposes
     const loanPurpose = await prisma.lershaLoanPurpose.findUnique({
       where: { productId: product_id },

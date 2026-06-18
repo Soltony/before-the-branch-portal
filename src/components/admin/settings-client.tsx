@@ -54,6 +54,7 @@ import { IconDisplay } from '@/components/icons';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '../ui/textarea';
+import { CONTRACT_LANGUAGES, type TermsLanguageField } from '@/lib/lersha/contract-languages';
 import { Skeleton } from '../ui/skeleton';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { Badge } from '../ui/badge';
@@ -2853,22 +2854,38 @@ export function SettingsClient({ initialProviders, initialTaxConfig }: { initial
     );
 }
 
+type TermsLanguageState = Record<TermsLanguageField, string>;
+
+const emptyTermsLanguageState = (): TermsLanguageState =>
+    CONTRACT_LANGUAGES.reduce((acc, lang) => {
+        acc[lang.field] = '';
+        return acc;
+    }, {} as TermsLanguageState);
+
 function AgreementTab({ provider, onProviderUpdate }: { provider: LoanProvider, onProviderUpdate: (update: Partial<LoanProvider>) => void }) {
     const { toast } = useToast();
     const { entityActions } = usePermissions();
     const termsActions = entityActions('TermsAndConditions');
     const canEditTerms = termsActions.create || termsActions.update;
-    const [terms, setTerms] = useState<TermsAndConditions | null>(null);
+    const [contents, setContents] = useState<TermsLanguageState>(emptyTermsLanguageState);
+    const [version, setVersion] = useState(0);
     const [isLoading, setIsLoading] = useState(true);
-    
+
     useEffect(() => {
         const fetchTerms = async () => {
             setIsLoading(true);
             try {
                 const response = await fetch(`/api/settings/terms?providerId=${provider.id}`);
                 if (response.ok) {
-                    const data = await response.json();
-                    setTerms(data);
+                    const data: TermsAndConditions | null = await response.json();
+                    const next = emptyTermsLanguageState();
+                    if (data) {
+                        CONTRACT_LANGUAGES.forEach(lang => {
+                            next[lang.field] = (data[lang.field] as string | null | undefined) ?? '';
+                        });
+                        setVersion(data.version ?? 0);
+                    }
+                    setContents(next);
                 }
             } catch (error) {
                  toast({ title: "Error", description: "Failed to load terms and conditions.", variant: "destructive"});
@@ -2878,23 +2895,35 @@ function AgreementTab({ provider, onProviderUpdate }: { provider: LoanProvider, 
         };
         fetchTerms();
     }, [provider.id, toast]);
-    
+
     const handleSave = async () => {
         if (!canEditTerms) {
             toast({ title: 'Not authorized', description: 'You are not authorized to update terms and conditions.', variant: 'destructive' });
             return;
         }
-        if (!terms || !terms.content.trim()) {
-            toast({ title: "Error", description: "Terms and conditions content cannot be empty.", variant: "destructive" });
+        const filled = CONTRACT_LANGUAGES.filter(lang => contents[lang.field].trim().length > 0);
+        if (filled.length === 0) {
+            toast({ title: "Error", description: "Enter the terms in at least one language before submitting.", variant: "destructive" });
             return;
         }
         setIsLoading(true);
         try {
             const originalTerms = provider.termsAndConditions?.find(t => t.isActive);
+            // Keep the legacy `content` column populated (first non-empty language) so
+            // single-language consumers (borrower mini-app, GET endpoint) keep working.
+            const defaultContent = contents[filled[0].field].trim();
+            const updated: Record<string, string> = {
+                providerId: provider.id,
+                content: defaultContent,
+            };
+            CONTRACT_LANGUAGES.forEach(lang => {
+                updated[lang.field] = contents[lang.field];
+            });
+
             const payload = {
                 original: originalTerms,
-                updated: { providerId: provider.id, content: terms.content }
-            }
+                updated,
+            };
 
             await postPendingChange({
                 entityType: 'TermsAndConditions',
@@ -2902,7 +2931,7 @@ function AgreementTab({ provider, onProviderUpdate }: { provider: LoanProvider, 
                 changeType: 'UPDATE', // Always an update/new version
                 payload: JSON.stringify(payload)
             }, 'Failed to submit new terms for approval.');
-            
+
             toast({ title: "Submitted for Approval", description: `A new version of the terms has been submitted for review.` });
 
         } catch (error: any) {
@@ -2911,7 +2940,6 @@ function AgreementTab({ provider, onProviderUpdate }: { provider: LoanProvider, 
             setIsLoading(false);
         }
     };
-
 
     if (isLoading) {
         return <div className="space-y-4">
@@ -2923,18 +2951,39 @@ function AgreementTab({ provider, onProviderUpdate }: { provider: LoanProvider, 
 
     return (
         <div className="space-y-4">
-            <Label htmlFor={`terms-content-${provider.id}`}>Terms and Conditions Content</Label>
-             <Textarea
-                id={`terms-content-${provider.id}`}
-                value={terms?.content || ''}
-                onChange={(e) => setTerms(prev => ({ ...(prev || { version: 0, content: '' }), content: e.target.value }) as TermsAndConditions)}
-                placeholder="Enter the terms and conditions for your loan products here."
-                rows={15}
-                     disabled={!canEditTerms}
-            />
+            <div>
+                <Label>Loan Contract — Terms and Conditions</Label>
+                <p className="text-sm text-muted-foreground">
+                    Configure the contract content for each language. The farmer's chosen
+                    language is presented during the loan contract step.
+                </p>
+            </div>
+            <Tabs defaultValue={CONTRACT_LANGUAGES[0].code} className="space-y-4">
+                <TabsList>
+                    {CONTRACT_LANGUAGES.map(lang => (
+                        <TabsTrigger key={lang.code} value={lang.code}>
+                            {lang.label}
+                            {contents[lang.field].trim() ? ' ●' : ''}
+                        </TabsTrigger>
+                    ))}
+                </TabsList>
+                {CONTRACT_LANGUAGES.map(lang => (
+                    <TabsContent key={lang.code} value={lang.code}>
+                        <Label htmlFor={`terms-${lang.field}-${provider.id}`}>{lang.label} content</Label>
+                        <Textarea
+                            id={`terms-${lang.field}-${provider.id}`}
+                            value={contents[lang.field]}
+                            onChange={(e) => setContents(prev => ({ ...prev, [lang.field]: e.target.value }))}
+                            placeholder={`Enter the ${lang.label} terms and conditions here.`}
+                            rows={15}
+                            disabled={!canEditTerms}
+                        />
+                    </TabsContent>
+                ))}
+            </Tabs>
             <div className="flex justify-between items-center">
                 <p className="text-sm text-muted-foreground">
-                    Current Version: {terms?.version || 0}
+                    Current Version: {version}
                 </p>
                 <Button onClick={handleSave} disabled={isLoading || !canEditTerms}>
                     {isLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin"/> : <Save className="h-4 w-4 mr-2" />}

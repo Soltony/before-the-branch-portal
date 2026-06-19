@@ -16,6 +16,7 @@ import {
   Send,
   Banknote,
   PiggyBank,
+  HeartHandshake,
 } from 'lucide-react';
 
 export const allMenuItems = [
@@ -131,6 +132,12 @@ export const allMenuItems = [
     path: '/admin/farmer-loans',
     label: 'Farmer Loans',
     icon: Wheat,
+    roles: ['Super Admin', 'Loan Manager'],
+  },
+  {
+    path: '/admin/insurance-payments',
+    label: 'Insurance Payments',
+    icon: HeartHandshake,
     roles: ['Super Admin', 'Loan Manager'],
   },
 ];

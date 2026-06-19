@@ -837,6 +837,7 @@ model LershaFarmer {
   loanPurposes                 LershaLoanPurpose[]
   loanRequests                 LershaLoanRequest[]
   loanContracts                LoanContract[]
+  insurancePayments            LershaInsurancePayment[]
 
   @@index([phoneNumber])
   @@index([status])
@@ -881,6 +882,62 @@ model LershaLoanRequest {
   @@index([farmerId])
   @@index([status])
   @@index([referenceNo])
+}
+
+// Per-insurer mapping: links an insurer name (as captured on the "Insurance"
+// LershaLoanPurpose) to the NIB insurance id and the bank account credited when
+// an insurance payment is approved. Managed by admins in the portal.
+model InsuranceAccount {
+  id            String                   @id @default(cuid())
+  insuranceName String                   @unique // matches LershaLoanPurpose.insuranceName
+  insuranceId   String // NIB insurance product id, e.g. INSURANCE001
+  accountNumber String // account credited when a payment is approved
+  status        String                   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  payments      LershaInsurancePayment[]
+
+  @@index([status])
+}
+
+// One row per farmer per insurance-payment request. Lersha sends a list of
+// farmerIDs to /api/v1/nib/insuranceRequest; we resolve each farmer's insurance
+// cost (from the "Insurance" LershaLoanPurpose captured at registration). An
+// admin reviews and approves; approval books a loan + credits the insurer
+// account (like other loan purposes) and we POST the per-farmer result back to
+// Lersha at /nib/insuranceConfirmation.
+model LershaInsurancePayment {
+  id                         String            @id @default(cuid())
+  batchId                    String? // groups all payments created from one /insuranceRequest call
+  farmerId                   String // FK to LershaFarmer.id
+  farmer                     LershaFarmer      @relation(fields: [farmerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  loanPurposeId              String? // the "Insurance" LershaLoanPurpose that priced this payment
+  insuranceName              String?
+  insuranceAccountId         String?
+  insuranceAccount           InsuranceAccount? @relation(fields: [insuranceAccountId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  insuranceId                String? // snapshot of NIB insurance id at request/approval time
+  creditAccount              String? // snapshot of the account credited
+  insuranceAmount            Float // amount paid for this farmer (from the insurance loan purpose)
+  status                     String            @default("REQUESTED") // REQUESTED | SUCCESS | FAILED | REJECTED
+  loanId                     String? // booked Loan id after approval
+  remainingBalance           Float? // remaining loan balance reported on confirmation
+  transactionId              String? // transaction reference from the CBS credit
+  transactionAmount          Float? // amount actually transacted on approval
+  rejectionReason            String?           @db.NVarChar(Max)
+  approvedByUserId           String?
+  requestPayload             String?           @db.NVarChar(Max)
+  responsePayload            String?           @db.NVarChar(Max)
+  lershaConfirmationSentAt   DateTime?
+  lershaConfirmationResponse String?           @db.NVarChar(Max)
+  requestedAt                DateTime          @default(now())
+  confirmedAt                DateTime?
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
+
+  @@index([farmerId])
+  @@index([status])
+  @@index([loanPurposeId])
+  @@index([batchId])
 }
 
 // ================================================= //

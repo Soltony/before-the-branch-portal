@@ -31,6 +31,8 @@ function getAllowedRolesForPath(path: string): string[] | undefined {
     '/api/providers': '/admin/providers',
     '/api/users': '/admin/users',
     '/api/reports': '/admin/reports',
+    '/api/insurance-payments': '/admin/insurance-payments',
+    '/api/insurance-accounts': '/admin/insurance-payments',
   };
 
   for (const prefix in apiPrefixToMenuPath) {
@@ -59,7 +61,8 @@ function withSecurityHeaders(res: NextResponse, csp: string, nonce: string) {
 
 const protectedAdminRoutes = [
   '/admin', '/api/admin', '/api/audit-logs', '/api/approvals', '/api/roles',
-  '/api/settings', '/api/providers', '/api/users', '/api/reports'
+  '/api/settings', '/api/providers', '/api/users', '/api/reports',
+  '/api/insurance-payments', '/api/insurance-accounts'
 ];
 const publicRoutes = ['/admin/login', '/loan/connect', '/admin/change-password'];
 
@@ -90,6 +93,10 @@ export const config = {
     '/api/users',
     '/api/reports/:path*',
     '/api/reports',
+    '/api/insurance-payments/:path*',
+    '/api/insurance-payments',
+    '/api/insurance-accounts/:path*',
+    '/api/insurance-accounts',
 
     // Mini-app pages and APIs that must not be accessible without a super-app token
     '/loan',

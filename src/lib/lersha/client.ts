@@ -2,6 +2,7 @@ import logger from "@/lib/logger";
 import type {
   LoanDecisionPayload,
   LershaDisbursementConfirmationPayload,
+  InsuranceConfirmationPayload,
 } from "./types";
 
 const LERSHA_BASE_URL =
@@ -67,4 +68,25 @@ export async function sendDisbursementConfirmation(
     status: "DISBURSED",
   };
   return lershaFetch("/nib/disbursement-confirmation", body);
+}
+
+/**
+ * Report insurance payment confirmation results to Lersha.
+ * POST /nib/insuranceConfirmation
+ */
+export async function sendInsuranceConfirmation(
+  payload: InsuranceConfirmationPayload,
+) {
+  const body: InsuranceConfirmationPayload = {
+    requests: payload.requests.map((r) => ({
+      farmer_id: r.farmer_id,
+      status: r.status,
+      remaining_balance: Number(r.remaining_balance.toFixed(2)),
+      ...(r.transaction_id ? { transaction_id: r.transaction_id } : {}),
+      ...(r.transaction_amount != null
+        ? { transaction_amount: Number(r.transaction_amount.toFixed(2)) }
+        : {}),
+    })),
+  };
+  return lershaFetch("/nib/insuranceConfirmation", body);
 }

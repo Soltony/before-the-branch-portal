@@ -80,6 +80,11 @@ export const hasAccountQuerySchema = z.object({
   phone: z.string().min(1),
 });
 
+/** Lersha requests insurance payments for a list of farmers. */
+export const insuranceRequestSchema = z.object({
+  farmerIDs: z.array(z.string().min(1)).min(1),
+});
+
 // ============================================================
 // Zod schemas for Lersha APIs we consume (outgoing requests)
 // ============================================================
@@ -106,6 +111,20 @@ export const lershaDisbursementConfirmationPayloadSchema = z.object({
   status: z.literal("DISBURSED"),
 });
 
+/** A single insurance-confirmation result reported back to Lersha. */
+export const insuranceConfirmationRequestSchema = z.object({
+  farmer_id: z.string().min(1),
+  status: z.enum(["SUCCESS", "FAILED"]),
+  remaining_balance: z.number(),
+  transaction_id: z.string().optional(),
+  transaction_amount: z.number().optional(),
+});
+
+/** Outbound payload for Lersha POST /nib/insuranceConfirmation */
+export const insuranceConfirmationPayloadSchema = z.object({
+  requests: z.array(insuranceConfirmationRequestSchema).min(1),
+});
+
 // ============================================================
 // TypeScript types derived from schemas
 // ============================================================
@@ -122,3 +141,10 @@ export type LershaDisbursementConfirmationPayload = z.infer<
 >;
 export type ContractRequestInput = z.infer<typeof contractRequestSchema>;
 export type ContractVerifyInput = z.infer<typeof contractVerifySchema>;
+export type InsuranceRequestInput = z.infer<typeof insuranceRequestSchema>;
+export type InsuranceConfirmationRequest = z.infer<
+  typeof insuranceConfirmationRequestSchema
+>;
+export type InsuranceConfirmationPayload = z.infer<
+  typeof insuranceConfirmationPayloadSchema
+>;

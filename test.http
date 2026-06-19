@@ -7,3 +7,13 @@ Content-Type: application/json
   "providerId": "PRO0001",
   "amount": "1.00"
 }
+
+###
+# Lersha → NIB: request insurance payments for a list of farmers.
+# Records a reviewable LershaInsurancePayment (status REQUESTED) per farmer.
+POST http://localhost:9002/api/v1/nib/insuranceRequest
+Content-Type: application/json
+
+{
+  "farmerIDs": ["FARMER001", "FARMER002", "FARMER003"]
+}

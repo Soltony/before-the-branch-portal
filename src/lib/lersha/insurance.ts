@@ -1,6 +1,7 @@
+import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import { createAuditLog } from "@/lib/audit-log";
-import { sendDisbursementConfirmation } from "@/lib/lersha/client";
+import { resolveAgricultureProduct } from "@/lib/lersha/disbursement";
 import logger from "@/lib/logger";
 import {
   calculateTotalRepayable,
@@ -9,124 +10,200 @@ import {
 import { addDays } from "date-fns";
 import { areDisbursementsEnabled } from "@/lib/disbursement-control";
 import { processExternalDisbursement } from "@/lib/external-disbursement";
+import type { InsuranceConfirmationRequest } from "@/lib/lersha/types";
 
 /**
- * Auto-disbursement for farmer loans after OTP verification.
- * Mirrors the standard personal-loan disbursement in /api/loans (handlePersonalLoan).
+ * Approve and book a farmer insurance payment.
+ *
+ * Mirrors `autoDisburseFarmerLoan` (src/lib/lersha/disbursement.ts): on approval
+ * the insurance amount is booked as a repayable loan (LoanApplication + Loan +
+ * ledger entries, provider fund decrement, installments) and the configured
+ * insurer account is credited via the external CBS. The per-farmer result is
+ * returned so the caller can batch the Lersha /nib/insuranceConfirmation call.
  */
 
-interface AutoDisbursementResult {
-  success: boolean;
+export interface InsurancePaymentOutcome {
+  paymentId: string;
+  /** External Lersha farmer id (LershaFarmer.farmerId). */
+  externalFarmerId: string;
+  /** True when the payment was booked (loan created). */
+  ok: boolean;
   message: string;
+  error?: string;
+  /** Soft errors (e.g. unmapped insurer, insufficient funds) leave the payment
+   * REQUESTED so the admin can fix the cause and retry. No Lersha confirmation. */
+  softError?: boolean;
+  /** True when the payment was already SUCCESS (idempotent no-op). */
+  alreadyProcessed?: boolean;
   loanId?: string;
-  borrowerId?: string;
   remainingBalance?: number;
-  lershaNotified?: boolean;
+  transactionId?: string | null;
+  transactionAmount?: number | null;
   externalDisbursementAttempted?: boolean;
   externalDisbursementOk?: boolean;
-  error?: string;
+  /** Present only when there is a SUCCESS result to report to Lersha. */
+  confirmation?: InsuranceConfirmationRequest;
 }
 
-export async function resolveAgricultureProduct() {
-  const configuredId = process.env.LERSHA_LOAN_PRODUCT_ID;
-  if (configuredId) {
-    const byId = await prisma.loanProduct.findFirst({
-      where: { id: configuredId, status: "Active" },
-      include: { provider: { include: { ledgerAccounts: true } } },
+function softError(
+  paymentId: string,
+  externalFarmerId: string,
+  message: string,
+): InsurancePaymentOutcome {
+  return {
+    paymentId,
+    externalFarmerId,
+    ok: false,
+    softError: true,
+    message,
+    error: message,
+  };
+}
+
+/**
+ * Remaining loan balance for a farmer = requested amount minus everything
+ * already disbursed (loan-request purposes + successful insurance payments).
+ * Used when reporting a FAILED/rejected insurance result to Lersha.
+ */
+export async function getFarmerRemainingBalance(
+  farmerInternalId: string,
+): Promise<number> {
+  const farmer = await prisma.lershaFarmer.findUnique({
+    where: { id: farmerInternalId },
+    select: { requestedLoanAmount: true },
+  });
+  if (!farmer) return 0;
+
+  const disbursedRequests = await prisma.lershaLoanRequest.findMany({
+    where: { farmerId: farmerInternalId, status: "DISBURSED" },
+    select: { productId: true },
+  });
+  const productIds = disbursedRequests
+    .map((r) => r.productId)
+    .filter((id): id is string => Boolean(id));
+
+  let disbursed = 0;
+  if (productIds.length > 0) {
+    const purposes = await prisma.lershaLoanPurpose.findMany({
+      where: { farmerId: farmerInternalId, productId: { in: productIds } },
+      select: { totalCost: true },
     });
-    if (byId) return byId;
+    disbursed += purposes.reduce((sum, p) => sum + p.totalCost, 0);
   }
 
-  return prisma.loanProduct.findFirst({
-    where: {
-      name: { contains: "agriculture" },
-      status: "Active",
-    },
-    include: { provider: { include: { ledgerAccounts: true } } },
+  const successfulInsurance = await prisma.lershaInsurancePayment.findMany({
+    where: { farmerId: farmerInternalId, status: "SUCCESS" },
+    select: { insuranceAmount: true },
   });
+  disbursed += successfulInsurance.reduce((sum, p) => sum + p.insuranceAmount, 0);
+
+  return Number(Math.max(0, farmer.requestedLoanAmount - disbursed).toFixed(2));
 }
 
-/**
- * Resolve the LoanProvider used by the Lersha farmer flow (the provider whose
- * loan product Lersha disburses against). Used to locate the right
- * TermsAndConditions when generating loan contracts.
- */
-export async function resolveLershaProvider() {
-  const product = await resolveAgricultureProduct();
-  return product?.provider ?? null;
-}
-
-/**
- * Automatically disburse a farmer's loan after OTP verification.
- */
-export async function autoDisburseFarmerLoan(
-  lershaLoanRequestId: string,
-): Promise<AutoDisbursementResult> {
+export async function processInsurancePayment(
+  insurancePaymentId: string,
+  actorId: string,
+): Promise<InsurancePaymentOutcome> {
   try {
-    const loanRequest = await prisma.lershaLoanRequest.findUnique({
-      where: { id: lershaLoanRequestId },
-      include: { farmer: true },
+    const payment = await prisma.lershaInsurancePayment.findUnique({
+      where: { id: insurancePaymentId },
+      include: { farmer: true, insuranceAccount: true },
     });
 
-    if (!loanRequest) {
+    if (!payment) {
       return {
-        success: false,
-        message: "Loan request not found",
-        error: "LOAN_REQUEST_NOT_FOUND",
+        paymentId: insurancePaymentId,
+        externalFarmerId: "",
+        ok: false,
+        message: "Insurance payment not found",
+        error: "PAYMENT_NOT_FOUND",
       };
     }
 
-    if (loanRequest.status === "DISBURSED") {
+    const farmer = payment.farmer;
+    const externalFarmerId = farmer.farmerId;
+
+    // Idempotency: already-booked payments are a no-op (no re-confirmation).
+    if (payment.status === "SUCCESS") {
       return {
-        success: true,
-        message: "Loan already disbursed",
-        remainingBalance: loanRequest.remainingBalance ?? undefined,
+        paymentId: payment.id,
+        externalFarmerId,
+        ok: true,
+        alreadyProcessed: true,
+        message: "Insurance payment already processed",
+        loanId: payment.loanId ?? undefined,
+        remainingBalance: payment.remainingBalance ?? undefined,
+        transactionId: payment.transactionId,
+        transactionAmount: payment.transactionAmount,
       };
     }
 
-    if (loanRequest.status !== "OTP_VERIFIED") {
+    if (payment.status !== "REQUESTED") {
       return {
-        success: false,
-        message: `Cannot disburse loan with status: ${loanRequest.status}`,
-        error: "INVALID_LOAN_STATUS",
+        paymentId: payment.id,
+        externalFarmerId,
+        ok: false,
+        message: `Cannot approve a payment with status "${payment.status}".`,
+        error: "INVALID_PAYMENT_STATUS",
       };
     }
 
-    const farmer = loanRequest.farmer;
+    const farmerUpper = farmer.status.toUpperCase();
+    if (farmerUpper === "REJECTED" || farmerUpper === "DECLINED") {
+      return {
+        paymentId: payment.id,
+        externalFarmerId,
+        ok: false,
+        softError: true,
+        message: "Farmer registration is rejected; cannot approve insurance.",
+        error: "FARMER_REJECTED",
+      };
+    }
+
+    // Re-resolve the insurer account mapping in case it was configured after the
+    // request was received (or changed since).
+    let insuranceAccount = payment.insuranceAccount;
+    if (!insuranceAccount && payment.insuranceName) {
+      insuranceAccount = await prisma.insuranceAccount.findFirst({
+        where: { insuranceName: payment.insuranceName, status: "ACTIVE" },
+      });
+    }
+    if (!insuranceAccount) {
+      return softError(
+        payment.id,
+        externalFarmerId,
+        `No active insurance account configured for "${payment.insuranceName ?? "this insurer"}". Configure it under Insurance Accounts before approving.`,
+      );
+    }
+
+    const creditAccount = insuranceAccount.accountNumber?.trim() || "";
+    if (!creditAccount) {
+      return softError(
+        payment.id,
+        externalFarmerId,
+        "Configured insurance account has no account number.",
+      );
+    }
+
+    const disbursementAmount = payment.insuranceAmount;
     const borrowerId = farmer.farmerId;
-
-    const selectedLoanPurpose = await prisma.lershaLoanPurpose.findUnique({
-      where: { productId: loanRequest.productId },
-    });
-
-    if (!selectedLoanPurpose) {
-      return {
-        success: false,
-        message: "Loan purpose not found for requested product",
-        error: "LOAN_PURPOSE_NOT_FOUND",
-      };
-    }
-
-    const disbursementAmount = selectedLoanPurpose.totalCost;
-    const creditAccount = selectedLoanPurpose.agroDealerAccountNo?.trim() || "";
 
     const product = await resolveAgricultureProduct();
     if (!product) {
-      return {
-        success: false,
-        message:
-          "No active agriculture LoanProduct found. Please configure a LoanProduct first.",
-        error: "NO_AGRICULTURE_PRODUCT",
-      };
+      return softError(
+        payment.id,
+        externalFarmerId,
+        "No active agriculture LoanProduct found. Please configure a LoanProduct first.",
+      );
     }
 
     const provider = product.provider;
     if (provider.initialBalance < disbursementAmount) {
-      return {
-        success: false,
-        message: `Insufficient provider funds. Available: ${provider.initialBalance}, Requested: ${disbursementAmount}`,
-        error: "INSUFFICIENT_PROVIDER_FUNDS",
-      };
+      return softError(
+        payment.id,
+        externalFarmerId,
+        `Insufficient provider funds. Available: ${provider.initialBalance}, Requested: ${disbursementAmount}`,
+      );
     }
 
     let borrower = await prisma.borrower.findUnique({
@@ -184,28 +261,28 @@ export async function autoDisburseFarmerLoan(
     );
 
     if (!principalReceivableAccount) {
-      return {
-        success: false,
-        message: "Principal Receivable ledger account not found.",
-        error: "MISSING_LEDGER_ACCOUNTS",
-      };
+      return softError(
+        payment.id,
+        externalFarmerId,
+        "Principal Receivable ledger account not found.",
+      );
     }
     if (calculatedServiceFee > 0 && !serviceFeeReceivableAccount) {
-      return {
-        success: false,
-        message: "Service Fee Receivable ledger account not found.",
-        error: "MISSING_LEDGER_ACCOUNTS",
-      };
+      return softError(
+        payment.id,
+        externalFarmerId,
+        "Service Fee Receivable ledger account not found.",
+      );
     }
     if (
       (calculatedTax > 0 || inclusiveTaxAmount > 0) &&
       !taxReceivableAccount
     ) {
-      return {
-        success: false,
-        message: "Tax Receivable ledger account not found.",
-        error: "MISSING_LEDGER_ACCOUNTS",
-      };
+      return softError(
+        payment.id,
+        externalFarmerId,
+        "Tax Receivable ledger account not found.",
+      );
     }
 
     const forcedProviderId = process.env.FORCE_PROVIDER_ID ?? "PRO0001";
@@ -245,7 +322,7 @@ export async function autoDisburseFarmerLoan(
             providerId: provider.id,
             loanId: createdLoan.id,
             date: disbursedDate,
-            description: `Farmer loan disbursement for ${farmer.farmerName} (Farm ID: ${farmer.farmerId})`,
+            description: `Insurance payment for ${farmer.farmerName} (Farm ID: ${farmer.farmerId}) — ${insuranceAccount!.insuranceName}`,
           },
         });
 
@@ -342,7 +419,10 @@ export async function autoDisburseFarmerLoan(
             }
           }
         } catch (e) {
-          console.error("[autoDisburseFarmerLoan] Failed to create installments", e);
+          console.error(
+            "[processInsurancePayment] Failed to create installments",
+            e,
+          );
         }
 
         if (creditAccount) {
@@ -359,16 +439,19 @@ export async function autoDisburseFarmerLoan(
                 providerId: forcedProviderId,
                 amount: disbursementTransferAmount,
                 loanId: createdLoan.id,
+                insuranceId: insuranceAccount!.insuranceId,
               }),
             } as any,
           });
         }
 
+        // Remaining loan balance reported to Lersha = requested loan amount
+        // minus everything already disbursed for this farmer (across loan
+        // requests AND prior successful insurance payments) minus this amount.
         const previousDisbursedRequests = await tx.lershaLoanRequest.findMany({
           where: {
             farmerId: farmer.id,
             status: "DISBURSED",
-            NOT: { id: lershaLoanRequestId },
           },
           select: { productId: true },
         });
@@ -391,21 +474,42 @@ export async function autoDisburseFarmerLoan(
           );
         }
 
+        const otherSuccessfulInsurance =
+          await tx.lershaInsurancePayment.findMany({
+            where: {
+              farmerId: farmer.id,
+              status: "SUCCESS",
+              NOT: { id: payment.id },
+            },
+            select: { insuranceAmount: true },
+          });
+        const previousInsuranceAmount = otherSuccessfulInsurance.reduce(
+          (sum, item) => sum + item.insuranceAmount,
+          0,
+        );
+
         const balance = Number(
           Math.max(
             0,
             farmer.requestedLoanAmount -
               previousDisbursedAmount -
+              previousInsuranceAmount -
               disbursementAmount,
           ).toFixed(2),
         );
 
-        await tx.lershaLoanRequest.update({
-          where: { id: lershaLoanRequestId },
+        await tx.lershaInsurancePayment.update({
+          where: { id: payment.id },
           data: {
-            status: "DISBURSED",
+            status: "SUCCESS",
+            loanId: createdLoan.id,
             remainingBalance: balance,
-            disbursementConfirmedAt: new Date(),
+            transactionAmount: disbursementTransferAmount,
+            insuranceAccountId: insuranceAccount!.id,
+            insuranceId: insuranceAccount!.insuranceId,
+            creditAccount,
+            approvedByUserId: actorId,
+            confirmedAt: new Date(),
           },
         });
 
@@ -416,8 +520,12 @@ export async function autoDisburseFarmerLoan(
         };
       });
 
+    // External CBS credit (best-effort, mirrors autoDisburseFarmerLoan: the loan
+    // stays booked and the result is reported as SUCCESS even if the upstream
+    // transfer fails — the DisbursementTransaction tracks retry state).
     let externalDisbursementAttempted = false;
     let externalDisbursementOk = false;
+    let upstreamTransactionId: string | null = null;
 
     if (creditAccount) {
       const disbursementsEnabled = await areDisbursementsEnabled();
@@ -428,93 +536,90 @@ export async function autoDisburseFarmerLoan(
           providerId: provider.id,
           amount: disbursementTransferAmount,
           loanId: loan.id,
-          actorId: "lersha-integration",
+          actorId,
         });
         externalDisbursementOk = ext.ok;
+        upstreamTransactionId = ext.transactionId ?? null;
         if (!ext.ok) {
           logger.error(
-            `[autoDisburseFarmerLoan] External disbursement failed for loan ${loan.id}: ${ext.error}`,
+            `[processInsurancePayment] External disbursement failed for loan ${loan.id}: ${ext.error}`,
           );
         }
       } else {
         logger.warn(
-          `[autoDisburseFarmerLoan] Disbursements disabled; loan ${loan.id} posted internally only`,
+          `[processInsurancePayment] Disbursements disabled; insurance loan ${loan.id} posted internally only`,
         );
       }
-    } else {
-      logger.warn(
-        `[autoDisburseFarmerLoan] No agro-dealer account for product ${loanRequest.productId}; skipping CBS transfer`,
-      );
     }
 
-    let lershaNotified = false;
-    try {
-      if (!loanRequest.referenceNo) {
-        throw new Error(
-          "referenceNo is required before Lersha disbursement confirmation",
-        );
-      }
-      const lershaPayload = {
-        farmer_id: farmer.farmerId,
-        remaining_balance: remainingBalance,
-        productId: loanRequest.productId,
-        referenceNo: loanRequest.referenceNo,
-        status: "DISBURSED" as const,
-      };
-      const lershaResult = await sendDisbursementConfirmation(lershaPayload);
-      lershaNotified = lershaResult.ok;
-      if (!lershaResult.ok) {
-        logger.error(
-          `[autoDisburseFarmerLoan] Lersha confirmation failed (${lershaResult.status}) for ${lershaLoanRequestId}`,
-        );
-      }
-    } catch (err) {
-      logger.error(
-        `[autoDisburseFarmerLoan] Failed to notify Lersha for ${lershaLoanRequestId}: ${err}`,
-      );
-    }
+    // Always report a transaction id to Lersha: prefer the upstream CBS id, else
+    // fall back to a stable internal reference (when disbursements are disabled
+    // or the upstream response carries no id).
+    const transactionId =
+      upstreamTransactionId ||
+      `INS-${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-${randomUUID()
+        .slice(0, 6)
+        .toUpperCase()}`;
+
+    await prisma.lershaInsurancePayment
+      .update({
+        where: { id: payment.id },
+        data: { transactionId },
+      })
+      .catch(() => null);
 
     await createAuditLog({
-      actorId: "lersha-integration",
-      action: "LERSHA_AUTO_DISBURSEMENT",
-      entity: "LershaLoanRequest",
-      entityId: lershaLoanRequestId,
+      actorId,
+      action: "LERSHA_INSURANCE_APPROVED",
+      entity: "LershaInsurancePayment",
+      entityId: payment.id,
       details: {
         farmerId: farmer.farmerId,
         farmerName: farmer.farmerName,
         borrowerId,
         loanId: loan.id,
-        loanAmount: disbursementAmount,
+        insuranceName: insuranceAccount.insuranceName,
+        insuranceId: insuranceAccount.insuranceId,
+        insuranceAmount: disbursementAmount,
         serviceFee: calculatedServiceFee,
         taxDeducted: inclusiveTaxAmount,
         netDisbursedAmount,
         remainingBalance,
         journalEntryId,
-        productId: loanRequest.productId,
-        loanPurpose: selectedLoanPurpose.loanPurpose,
-        creditAccount: creditAccount || null,
-        lershaNotified,
+        creditAccount,
+        transactionId,
         externalDisbursementAttempted,
         externalDisbursementOk,
       },
     });
 
     return {
-      success: true,
-      message: "Loan disbursed successfully",
+      paymentId: payment.id,
+      externalFarmerId,
+      ok: true,
+      message: "Insurance payment approved and booked",
       loanId: loan.id,
-      borrowerId: borrower.id,
       remainingBalance,
-      lershaNotified,
+      transactionId,
+      transactionAmount: disbursementTransferAmount,
       externalDisbursementAttempted,
       externalDisbursementOk,
+      confirmation: {
+        farmer_id: externalFarmerId,
+        status: "SUCCESS",
+        remaining_balance: remainingBalance,
+        transaction_id: transactionId,
+        transaction_amount: disbursementTransferAmount,
+      },
     };
   } catch (error: any) {
-    console.error("[autoDisburseFarmerLoan] Error:", error);
+    console.error("[processInsurancePayment] Error:", error);
     return {
-      success: false,
-      message: "Failed to disburse loan",
-      error: error.message,
+      paymentId: insurancePaymentId,
+      externalFarmerId: "",
+      ok: false,
+      message: "Failed to process insurance payment",
+      error: error?.message ?? String(error),
     };
   }
 }

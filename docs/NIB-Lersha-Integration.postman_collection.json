@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "nib-lersha-integration-v1",
 		"name": "NIB Lersha Integration API",
-		"description": "API collection for the NIB MicroCredit – Lersha farmer loan integration.\n\nThis collection contains all endpoints exposed by NIB for Lersha to consume.\n\n## Flow\n1. **Register Farmers** – Send farmer details via `sendFarmerDetail`\n2. **Check Account** – Verify if a farmer has a bank account for their phone via `hasAccount` (core-banking lookup)\n3. **Get Contract Content** – Fetch the loan contract (T&C) text in the farmer's chosen language for review\n4. **Request Contract** – NIB generates a unique **Contract ID** and SMSs it to the farmer\n5. **Verify Contract** – Submit the Contract ID to **sign** the contract (status → `SIGNED`)\n6. **Request Loan** – Initiate a loan request; **requires a signed contract**, then an OTP is sent to the farmer's phone\n7. **Confirm OTP** – Verify the OTP, then NIB **automatically** disburses the loan and notifies Lersha via `POST /api/v1/nib/disbursement-confirmation` with `{ farmer_id, remaing_balance }` (Lersha field name)\n8. **Confirm Disbursement** *(optional)* – Manual retry/reconciliation only; not required in the normal flow\n\n## Farmer approval (not an API in this collection)\nA farmer must be **approved by an admin on the NIB farmer page** before a loan contract can be issued (step 4) and before any loan can be requested (step 6). Approval is an internal admin action and is intentionally **not** exposed as part of this integration API.\n\n## Loan contract step (steps 3–5)\nAfter a farmer is approved and before a loan can be processed, the multilingual loan contract must be presented and signed. The contract content is the active **Terms & Conditions** configured per language in Admin → Settings → Borrower Agreement (Amharic, Afan Oromo, Tigrigna, Somali, Sidama).\n\n## Lersha callback (server-to-server, not in this collection)\nAfter step 7, NIB calls Lersha:\n- `POST {LERSHA_API_BASE_URL}/nib/disbursement-confirmation`\n- Body: `{ \"farmer_id\": \"...\", \"remaing_balance\": 50000 }`\n\n## Insurance payment flow\n1. **Request Insurance Payment** — Lersha sends a list of `farmerIDs` to `POST /api/v1/nib/insuranceRequest`. For each farmer, NIB resolves the **Insurance** loan purpose captured at registration and records a reviewable insurance payment (status `REQUESTED`).\n2. **Admin review (not an API in this collection)** — An admin reviews the requested insurance payments on the NIB portal and approves them **one-by-one or in bulk**. On approval the payment is booked like any other loan purpose (loan + ledger entries, provider fund decrement) and the configured **insurer account** is credited via the core-banking disbursement.\n3. **Insurance confirmation callback (server-to-server)** — After approval/rejection, NIB calls Lersha:\n   - `POST {LERSHA_API_BASE_URL}/nib/insuranceConfirmation`\n   - Body: `{ \"requests\": [ { \"farmer_id\": \"...\", \"status\": \"SUCCESS\" | \"FAILED\", \"remaining_balance\": 5000, \"transaction_id\": \"TXN...\", \"transaction_amount\": 1500 } ] }`\n\n> The per-insurer account + NIB insurance ID are configured in Admin → Insurance Payments → Insurance Accounts (mapped by the insurer `insurance_name` sent on the farmer's insurance loan purpose).\n\n## Collection Variables\n- `base_url` – NIB API base URL (e.g. `http://localhost:3004`)\n- `farmer_id` – Set after registration\n- `product_id` – Set after registration\n- `language_code` – Contract language: `am` | `om` | `ti` | `so` | `sid`\n- `contract_code` – Contract ID; auto-set after Request Contract (non-prod), else read from SMS\n- `request_id` – Set after loan request\n- `otp` – Enter manually from SMS\n- `reference_no` – Set after OTP confirmation\n- `loan_id` – Set after successful auto-disbursement\n- `remaining_balance` – Set after successful auto-disbursement",
+		"description": "API collection for the NIB MicroCredit – Lersha farmer loan integration.\n\nThis collection contains all endpoints exposed by NIB for Lersha to consume.\n\n## Flow\n1. **Register Farmers** – Send farmer details via `sendFarmerDetail`\n2. **Check Account** – Verify if a farmer has a bank account for their phone via `hasAccount` (core-banking lookup)\n3. **Get Contract Content** – Fetch the loan contract (T&C) text in the farmer's chosen language for review\n4. **Request Contract** – NIB generates a unique **Contract ID** and SMSs it to the farmer\n5. **Verify Contract** – Submit the Contract ID to **sign** the contract (status → `SIGNED`)\n6. **Request Loan** – Initiate a loan request; **requires a signed contract**, then an OTP is sent to the farmer's phone\n7. **Confirm OTP** – Verify the OTP, then NIB **automatically** disburses the loan and notifies Lersha via `POST /api/v1/nib/disbursement-confirmation` with `{ farmer_id, remaing_balance }` (Lersha field name)\n8. **Confirm Disbursement** *(optional)* – Manual retry/reconciliation only; not required in the normal flow\n\n## Farmer approval (not an API in this collection)\nA farmer must be **approved by an admin on the NIB farmer page** before a loan contract can be issued (step 4) and before any loan can be requested (step 6). Approval is an internal admin action and is intentionally **not** exposed as part of this integration API.\n\n## Loan contract step (steps 3–5)\nAfter a farmer is approved and before a loan can be processed, the multilingual loan contract must be presented and signed. The contract content is the active **Terms & Conditions** configured per language in Admin → Settings → Borrower Agreement (Amharic, Afan Oromo, Tigrigna, Somali, Sidama).\n\n## Lersha callback (server-to-server, not in this collection)\nAfter step 7, NIB calls Lersha:\n- `POST {LERSHA_API_BASE_URL}/nib/disbursement-confirmation`\n- Body: `{ \"farmer_id\": \"...\", \"remaing_balance\": 50000 }`\n\n## Insurance payment flow\n1. **Request Insurance Payment** — Lersha sends a list of `farmerIDs` to `POST /api/v1/nib/insuranceRequest`. For each farmer, NIB resolves the **Insurance** loan purpose captured at registration and records a reviewable insurance payment (status `REQUESTED`).\n2. **Admin review (not an API in this collection)** — An admin reviews the requested insurance payments on the NIB portal and approves them **one-by-one or in bulk**. On approval the payment is booked like any other loan purpose (loan + ledger entries, provider fund decrement) and the configured **insurer account** is credited via the core-banking disbursement.\n3. **Insurance confirmation callback (server-to-server)** — After approval/rejection, NIB calls Lersha:\n   - `POST {LERSHA_API_BASE_URL}/nib/insuranceConfirmation`\n   - Body: `{ \"requests\": [ { \"farmer_id\": \"...\", \"status\": \"SUCCESS\" | \"FAILED\", \"remaining_balance\": 5000, \"transaction_id\": \"TXN...\", \"transaction_amount\": 1500 } ] }`\n\n> The per-insurer account + NIB insurance ID are configured in Admin → Insurance Payments → Insurance Accounts (mapped by the insurer `insurance_name` sent on the farmer's insurance loan purpose).\n\n## Product price change flow\nLersha configures product prices at the **woreda level**: one price update affects all farmers in that woreda simultaneously. The bank holds a configurable tolerance (default **±10%**) and validates the proposed new price for every affected farmer before applying anything.\n\n1. **Submit batch price change** — Lersha sends the full list of affected `(farmerId, productId, newUnitPrice)` tuples to `POST /api/v1/nib/priceChange`. Agro-dealer changes are handled by a separate endpoint (see below).\n2. **Validate all-or-nothing** — NIB validates every item against the configured threshold. If **any** item exceeds the threshold (or a farmer/product is not found), the **entire batch is rejected** with HTTP 422 and a per-farmer violation list. Nothing is written.\n3. **Apply atomically** — Only when all items pass does NIB apply the update inside a single database transaction (HTTP 200). The bank's `unitPrice` and (when quantity is known) `totalCost` are updated; an audit log with a `batchId` is recorded.\n\n## Agro-dealer change flow\nAgro-dealer changes are handled **separately** from price changes via `POST /api/v1/nib/agroDealerChange`. They are woreda-level too, so Lersha sends the full batch of affected `(farmerId, productId)` pairs (each with a new `agro_dealer_name` + `agro_dealer_account_number`) in one request. Validation is **all-or-nothing** — if any pair can't be resolved (or a `productId` is duplicated) the entire batch is rejected (HTTP 422) and nothing is written; otherwise every dealer is updated atomically in a single transaction. The product price is never touched, and there is no woreda-wide tolerance to enforce.\n\n> **Bank-side threshold configuration** — An admin can adjust the tolerance via `PUT /api/settings/price-change-control` (see the *Bank Configuration* folder). The default is 10 (±10%). This endpoint requires an authenticated admin session and is **not** part of the Lersha integration — it is bank-internal only.\n\n## Collection Variables\n- `base_url` – NIB API base URL (e.g. `http://localhost:3004`)\n- `farmer_id` – Set after registration\n- `product_id` – Set after registration\n- `language_code` – Contract language: `am` | `om` | `ti` | `so` | `sid`\n- `contract_code` – Contract ID; auto-set after Request Contract (non-prod), else read from SMS\n- `request_id` – Set after loan request\n- `otp` – Enter manually from SMS\n- `reference_no` – Set after OTP confirmation\n- `loan_id` – Set after successful auto-disbursement\n- `remaining_balance` – Set after successful auto-disbursement\n- `batch_id` – Auto-set after a successful price change; identifies the applied batch in audit logs\n- `agro_batch_id` – Auto-set after a successful agro-dealer change; identifies the applied batch in audit logs",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"auth": {
@@ -69,6 +69,16 @@
 		{
 			"key": "remaining_balance",
 			"value": "50000",
+			"type": "string"
+		},
+		{
+			"key": "batch_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "agro_batch_id",
+			"value": "",
 			"type": "string"
 		}
 	],
@@ -889,6 +899,416 @@
 					"body": "{\n  \"success\": false,\n  \"message\": \"Failed to fetch farmers\"\n}"
 				}
 			]
+		},
+		{
+			"name": "10. Price Change (Woreda Batch)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 200) {",
+							"    const body = pm.response.json();",
+							"    if (body.batchId) {",
+							"        pm.collectionVariables.set('batch_id', body.batchId);",
+							"        console.log('batch_id set to: ' + body.batchId);",
+							"    }",
+							"    console.log('Price change applied. Items updated: ' + (body.applied ? body.applied.length : 0));",
+							"} else if (pm.response.code === 422) {",
+							"    const body = pm.response.json();",
+							"    console.warn('Price change rejected. Violations: ' + JSON.stringify(body.violations));",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"changes\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"{{product_id}}\",\n      \"newUnitPrice\": 4800\n    },\n    {\n      \"farmerId\": \"FARMER-002\",\n      \"productId\": \"<product_id_of_farmer_002>\",\n      \"newUnitPrice\": 4800\n    }\n  ]\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/v1/nib/priceChange",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"nib",
+						"priceChange"
+					]
+				},
+				"description": "Submit a woreda-level product price change for a batch of affected farmers.\n\nLersha configures product prices at the **woreda level**: one price update affects every farmer in that woreda. Lersha must enumerate all affected `(farmerId, productId)` pairs in a single request. NIB validates the proposed `newUnitPrice` for every item against the bank-configured tolerance (**default ±10%**) before applying anything.\n\n> Agro-dealer changes are handled separately — see **11. Agro-Dealer Change**.\n\n### All-or-nothing semantics\n- If **any** item fails validation → the entire batch is **rejected** (HTTP 422), nothing is written, and a per-item `violations` list is returned.\n- Only when all items pass → every update is applied atomically in one database transaction (HTTP 200).\n\n### Request Body\n```json\n{\n  \"changes\": [\n    {\n      \"farmerId\": \"FARMER-001\",       // required\n      \"productId\": \"<uuid>\",           // required – LershaLoanPurpose.productId\n      \"newUnitPrice\": 4800             // required – must be positive\n    }\n  ]\n}\n```\n\n### Violation reasons\n| Reason | Meaning |\n|--------|---------|\n| `EXCEEDS_THRESHOLD` | Price change percentage exceeds the bank-configured tolerance |\n| `MISSING_BASELINE_PRICE` | The loan purpose has no current `unitPrice` to compare against |\n| `PRODUCT_NOT_FOUND` | No loan purpose exists with the given `productId` |\n| `FARMER_PRODUCT_MISMATCH` | The `productId` does not belong to the given `farmerId` |\n| `DUPLICATE_IN_REQUEST` | The same `productId` appears more than once in the batch |\n\n### Response (200) – applied\n```json\n{\n  \"success\": true,\n  \"message\": \"Price change applied\",\n  \"batchId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"thresholdPercent\": 10,\n  \"applied\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"<uuid>\",\n      \"oldUnitPrice\": 4500,\n      \"newUnitPrice\": 4800,\n      \"newTotalCost\": 24000\n    }\n  ]\n}\n```\n\n### Response (422) – rejected\n```json\n{\n  \"success\": false,\n  \"message\": \"Price change rejected\",\n  \"thresholdPercent\": 10,\n  \"requested\": 2,\n  \"violations\": [\n    {\n      \"farmerId\": \"FARMER-002\",\n      \"productId\": \"<uuid>\",\n      \"reason\": \"EXCEEDS_THRESHOLD\",\n      \"oldUnitPrice\": 4000,\n      \"newUnitPrice\": 5500,\n      \"changePercent\": 37.5,\n      \"allowedPercent\": 10\n    }\n  ]\n}\n```\n\n> The `batch_id` collection variable is auto-set on a successful (200) response for use in audit-log lookups."
+			},
+			"response": [
+				{
+					"name": "200 - Price Change Applied",
+					"originalRequest": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"changes\": [\n    { \"farmerId\": \"FARMER-001\", \"productId\": \"a1b2c3d4-uuid\", \"newUnitPrice\": 4800 }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/nib/priceChange",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "nib", "priceChange"]
+						}
+					},
+					"status": "OK",
+					"code": 200,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": true,\n  \"message\": \"Price change applied\",\n  \"batchId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"thresholdPercent\": 10,\n  \"applied\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"a1b2c3d4-uuid\",\n      \"oldUnitPrice\": 4500,\n      \"newUnitPrice\": 4800,\n      \"newTotalCost\": 24000\n    }\n  ]\n}"
+				},
+				{
+					"name": "422 - Rejected (Threshold Exceeded)",
+					"status": "Unprocessable Entity",
+					"code": 422,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Price change rejected\",\n  \"thresholdPercent\": 10,\n  \"requested\": 2,\n  \"violations\": [\n    {\n      \"farmerId\": \"FARMER-002\",\n      \"productId\": \"e5f6g7h8-uuid\",\n      \"reason\": \"EXCEEDS_THRESHOLD\",\n      \"oldUnitPrice\": 4000,\n      \"newUnitPrice\": 5500,\n      \"changePercent\": 37.5,\n      \"allowedPercent\": 10\n    }\n  ]\n}"
+				},
+				{
+					"name": "422 - Rejected (Product Not Found)",
+					"status": "Unprocessable Entity",
+					"code": 422,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Price change rejected\",\n  \"thresholdPercent\": 10,\n  \"requested\": 1,\n  \"violations\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"unknown-uuid\",\n      \"reason\": \"PRODUCT_NOT_FOUND\"\n    }\n  ]\n}"
+				},
+				{
+					"name": "422 - Rejected (Duplicate in Request)",
+					"status": "Unprocessable Entity",
+					"code": 422,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Price change rejected\",\n  \"violations\": [\n    {\n      \"productId\": \"a1b2c3d4-uuid\",\n      \"reason\": \"DUPLICATE_IN_REQUEST\"\n    }\n  ]\n}"
+				},
+				{
+					"name": "400 - Invalid Request Body",
+					"status": "Bad Request",
+					"code": 400,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Invalid request\",\n  \"details\": {\n    \"formErrors\": [],\n    \"fieldErrors\": {\n      \"changes\": [\"Required\"]\n    }\n  }\n}"
+				},
+				{
+					"name": "500 - Internal Server Error",
+					"status": "Internal Server Error",
+					"code": 500,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Internal server error\"\n}"
+				}
+			]
+		},
+		{
+			"name": "11. Agro-Dealer Change",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 200) {",
+							"    const body = pm.response.json();",
+							"    if (body.batchId) {",
+								"        pm.collectionVariables.set('agro_batch_id', body.batchId);",
+								"        console.log('agro_batch_id set to: ' + body.batchId);",
+								"    }",
+								"    console.log('Agro-dealer change applied. Items updated: ' + (body.applied ? body.applied.length : 0));",
+							"} else if (pm.response.code === 422) {",
+							"    const rejected = pm.response.json();",
+								"    console.warn('Agro-dealer change rejected. Violations: ' + JSON.stringify(rejected.violations));",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"changes\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"{{product_id}}\",\n      \"agro_dealer_name\": \"Green Fields Agro\",\n      \"agro_dealer_account_number\": \"1000123456789\"\n    },\n    {\n      \"farmerId\": \"FARMER-002\",\n      \"productId\": \"<product_id_of_farmer_002>\",\n      \"agro_dealer_name\": \"Rift Valley Supplies\",\n      \"agro_dealer_account_number\": \"1000987654321\"\n    }\n  ]\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/api/v1/nib/agroDealerChange",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"nib",
+						"agroDealerChange"
+					]
+				},
+				"description": "Update the agro-dealer (name + account number) on a batch of farmers' loan purposes.\n\nAgro-dealer changes are woreda-level too, so Lersha enumerates all affected `(farmerId, productId)` pairs in a single request. Kept separate from **10. Price Change** so the dealer can be changed without touching the product price (and vice-versa). Unlike price changes there is no woreda-wide tolerance to enforce — any resolvable pair can have its dealer updated.\n\n### All-or-nothing semantics\n- If **any** item fails validation → the entire batch is **rejected** (HTTP 422), nothing is written, and a per-item `violations` list is returned.\n- Only when all items pass → every update is applied atomically in one database transaction (HTTP 200).\n\n### Request Body\n```json\n{\n  \"changes\": [\n    {\n      \"farmerId\": \"FARMER-001\",                    // required\n      \"productId\": \"<uuid>\",                        // required – LershaLoanPurpose.productId\n      \"agro_dealer_name\": \"Green Fields Agro\",      // required\n      \"agro_dealer_account_number\": \"1000123456789\" // required\n    }\n  ]\n}\n```\n\n### Violation reasons (HTTP 422)\n| Reason | Meaning |\n|--------|---------|\n| `PRODUCT_NOT_FOUND` | No loan purpose exists with the given `productId` |\n| `FARMER_PRODUCT_MISMATCH` | The `productId` does not belong to the given `farmerId` |\n| `DUPLICATE_IN_REQUEST` | The same `productId` appears more than once in the batch |\n\n### Response (200) – applied\n```json\n{\n  \"success\": true,\n  \"message\": \"Agro-dealer change applied\",\n  \"batchId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"applied\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"<uuid>\",\n      \"agroDealerName\": \"Green Fields Agro\",\n      \"agroDealerAccountNo\": \"1000123456789\"\n    }\n  ]\n}\n```\n\n### Response (422) – rejected\n```json\n{\n  \"success\": false,\n  \"message\": \"Agro-dealer change rejected\",\n  \"requested\": 2,\n  \"violations\": [\n    {\n      \"farmerId\": \"FARMER-002\",\n      \"productId\": \"<uuid>\",\n      \"reason\": \"FARMER_PRODUCT_MISMATCH\"\n    }\n  ]\n}\n```\n\n> The `agro_batch_id` collection variable is auto-set on a successful (200) response for use in audit-log lookups."
+			},
+			"response": [
+				{
+					"name": "200 - Agro-Dealer Change Applied",
+					"originalRequest": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"changes\": [\n    { \"farmerId\": \"FARMER-001\", \"productId\": \"a1b2c3d4-uuid\", \"agro_dealer_name\": \"Green Fields Agro\", \"agro_dealer_account_number\": \"1000123456789\" }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/nib/agroDealerChange",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "nib", "agroDealerChange"]
+						}
+					},
+					"status": "OK",
+					"code": 200,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": true,\n  \"message\": \"Agro-dealer change applied\",\n  \"batchId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"applied\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"a1b2c3d4-uuid\",\n      \"agroDealerName\": \"Green Fields Agro\",\n      \"agroDealerAccountNo\": \"1000123456789\"\n    }\n  ]\n}"
+				},
+				{
+					"name": "422 - Rejected (Product Not Found)",
+					"status": "Unprocessable Entity",
+					"code": 422,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Agro-dealer change rejected\",\n  \"requested\": 1,\n  \"violations\": [\n    {\n      \"farmerId\": \"FARMER-001\",\n      \"productId\": \"unknown-uuid\",\n      \"reason\": \"PRODUCT_NOT_FOUND\"\n    }\n  ]\n}"
+				},
+				{
+					"name": "422 - Rejected (Farmer/Product Mismatch)",
+					"status": "Unprocessable Entity",
+					"code": 422,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Agro-dealer change rejected\",\n  \"requested\": 2,\n  \"violations\": [\n    {\n      \"farmerId\": \"FARMER-999\",\n      \"productId\": \"a1b2c3d4-uuid\",\n      \"reason\": \"FARMER_PRODUCT_MISMATCH\"\n    }\n  ]\n}"
+				},
+				{
+					"name": "400 - Invalid Request Body",
+					"status": "Bad Request",
+					"code": 400,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Invalid request\",\n  \"details\": {\n    \"formErrors\": [],\n    \"fieldErrors\": {\n      \"changes\": [\"Required\"]\n    }\n  }\n}"
+				},
+				{
+					"name": "500 - Internal Server Error",
+					"status": "Internal Server Error",
+					"code": 500,
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"body": "{\n  \"success\": false,\n  \"message\": \"Internal server error\"\n}"
+				}
+			]
+		},
+		{
+			"name": "Bank Configuration",
+			"item": [
+				{
+					"name": "Get Price Change Threshold",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/settings/price-change-control",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"price-change-control"
+							]
+						},
+						"description": "**Bank-internal only** — requires an authenticated admin session (NIB portal login). Not part of the Lersha integration.\n\nReturns the bank's current price-change tolerance. The `thresholdPercent` value means a proposed `newUnitPrice` is accepted only when it is within ±`thresholdPercent`% of the current `unitPrice` stored for that farmer's loan purpose.\n\n### Response (200)\n```json\n{\n  \"thresholdPercent\": 10,\n  \"updatedAt\": \"2026-06-24T10:00:00.000Z\"\n}\n```\n\n### Errors\n| Code | Meaning |\n|------|--------|\n| 403  | Not authenticated / insufficient permissions |"
+					},
+					"response": [
+						{
+							"name": "200 - Current Threshold",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"thresholdPercent\": 10,\n  \"updatedAt\": \"2026-06-24T10:00:00.000Z\"\n}"
+						},
+						{
+							"name": "403 - Not Authorized",
+							"status": "Forbidden",
+							"code": 403,
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"error\": \"Not authorized\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Update Price Change Threshold",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"thresholdPercent\": 10\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/settings/price-change-control",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"settings",
+								"price-change-control"
+							]
+						},
+						"description": "**Bank-internal only** — requires an authenticated admin session (NIB portal login) with `settings` → `update` permission. Not part of the Lersha integration.\n\nUpdates the bank's price-change tolerance. The change takes effect **immediately** — the next call to `POST /api/v1/nib/priceChange` will use the new value.\n\n### Request Body\n| Field              | Type   | Required | Constraints | Description |\n|--------------------|--------|----------|-------------|-------------|\n| `thresholdPercent` | number | Yes      | > 0, ≤ 100  | New tolerance in percent (e.g. `15` = ±15%) |\n\n### Response (200)\n```json\n{\n  \"thresholdPercent\": 15,\n  \"updatedAt\": \"2026-06-24T11:30:00.000Z\"\n}\n```\n\n### Errors\n| Code | Meaning |\n|------|--------|\n| 400  | `thresholdPercent` out of range or missing |\n| 403  | Not authenticated / insufficient permissions |"
+					},
+					"response": [
+						{
+							"name": "200 - Threshold Updated",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"thresholdPercent\": 15,\n  \"updatedAt\": \"2026-06-24T11:30:00.000Z\"\n}"
+						},
+						{
+							"name": "400 - Validation Error",
+							"status": "Bad Request",
+							"code": 400,
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "[\n  {\n    \"code\": \"too_big\",\n    \"maximum\": 100,\n    \"path\": [\"thresholdPercent\"],\n    \"message\": \"Number must be less than or equal to 100\"\n  }\n]"
+						},
+						{
+							"name": "403 - Not Authorized",
+							"status": "Forbidden",
+							"code": 403,
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"error\": \"Not authorized\"\n}"
+						}
+					]
+				}
+			],
+			"description": "Bank-internal configuration endpoints. These require an authenticated NIB admin session and are **not** part of the Lersha integration API.\n\nAll requests to this folder must be made with a valid admin session cookie (`accessToken`) from a user with `settings` read/update permissions."
 		}
 	]
 }

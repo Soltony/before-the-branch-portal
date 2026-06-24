@@ -85,6 +85,47 @@ export const insuranceRequestSchema = z.object({
   farmerIDs: z.array(z.string().min(1)).min(1),
 });
 
+/**
+ * A single proposed product-price change for one farmer's loan purpose.
+ * `productId` is the LershaLoanPurpose.productId. Agro-dealer changes are
+ * handled separately via /api/v1/nib/agroDealerChange.
+ */
+const priceChangeItemSchema = z.object({
+  farmerId: z.string().min(1),
+  productId: z.string().min(1),
+  newUnitPrice: z.number().positive(),
+});
+
+/**
+ * Lersha prices products at the woreda level, so one price change affects every
+ * farmer in that woreda. Lersha sends the full batch of affected farmers; the
+ * bank validates all of them against its tolerance and applies all-or-nothing.
+ */
+export const priceChangeRequestSchema = z.object({
+  changes: z.array(priceChangeItemSchema).min(1),
+});
+
+/**
+ * A single agro-dealer change for one farmer's loan purpose. `productId` is the
+ * LershaLoanPurpose.productId.
+ */
+const agroDealerChangeItemSchema = z.object({
+  farmerId: z.string().min(1),
+  productId: z.string().min(1),
+  agro_dealer_name: z.string().min(1),
+  agro_dealer_account_number: z.string().min(1),
+});
+
+/**
+ * Agro-dealer changes are woreda-level too, so Lersha sends the full batch of
+ * affected farmers at once. Kept separate from price changes so the two
+ * concerns can be requested independently. Validated all-or-nothing like
+ * priceChange (no tolerance applies — any resolvable pair can be updated).
+ */
+export const agroDealerChangeRequestSchema = z.object({
+  changes: z.array(agroDealerChangeItemSchema).min(1),
+});
+
 // ============================================================
 // Zod schemas for Lersha APIs we consume (outgoing requests)
 // ============================================================
@@ -142,6 +183,10 @@ export type LershaDisbursementConfirmationPayload = z.infer<
 export type ContractRequestInput = z.infer<typeof contractRequestSchema>;
 export type ContractVerifyInput = z.infer<typeof contractVerifySchema>;
 export type InsuranceRequestInput = z.infer<typeof insuranceRequestSchema>;
+export type PriceChangeRequestInput = z.infer<typeof priceChangeRequestSchema>;
+export type AgroDealerChangeRequestInput = z.infer<
+  typeof agroDealerChangeRequestSchema
+>;
 export type InsuranceConfirmationRequest = z.infer<
   typeof insuranceConfirmationRequestSchema
 >;

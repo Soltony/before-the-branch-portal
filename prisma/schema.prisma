@@ -30,6 +30,7 @@ model User {
   createdChanges              PendingChange[]       @relation("CreatedBy")
   approvedChanges             PendingChange[]       @relation("ApprovedBy")
   updatedDisbursementControls DisbursementControl[] @relation("DisbursementControlUpdatedBy")
+  updatedPriceChangeControls  PriceChangeControl[]  @relation("PriceChangeControlUpdatedBy")
   recordedTaxTransfers        TaxTransferSimulation[] @relation("TaxTransferRecordedBy")
   reversedTaxTransfers        TaxTransferSimulation[] @relation("TaxTransferReversedBy")
   recordedFundReplenishments  FundReplenishment[]     @relation("FundReplenishmentRecordedBy")
@@ -75,6 +76,20 @@ model DisbursementControl {
   updatedBy   User?    @relation("DisbursementControlUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([updatedById])
+}
+
+// Single-row table with id = 'global'. Bank-configured tolerance (percent) for
+// Lersha woreda price changes. A price change is rejected if it moves any
+// farmer's unit price by more than ±thresholdPercent. Default ±10%.
+model PriceChangeControl {
+  id               String   @id @default("global")
+  thresholdPercent Float    @default(10)
+  updatedById      String?
+  updatedBy        User?    @relation("PriceChangeControlUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@index([updatedById])
 }

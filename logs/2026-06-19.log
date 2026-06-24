@@ -1,0 +1,15 @@
+[2026-06-19T06:23:16.460Z] [pid:36588] [ERROR] [processInsurancePayment] External disbursement failed for loan cmqkjlmp80008abz6zckokxby: fetch failed
+[2026-06-19T06:23:16.476Z] [pid:36588] [INFO] [Lersha] POST https://dev-api-integration.lersha.com/api/v1/nib/insuranceConfirmation
+[2026-06-19T06:23:16.492Z] [pid:36588] [ERROR] [insurance-payments] Failed to notify Lersha: TypeError: fetch failed
+[2026-06-19T06:24:34.098Z] [pid:36588] [INFO] [Lersha] POST https://dev-api-integration.lersha.com/api/v1/nib/loan-decision
+[2026-06-19T06:25:02.052Z] [pid:36588] [ERROR] [processInsurancePayment] External disbursement failed for loan cmqkjnw7n000labz6nm5s34jd: fetch failed
+[2026-06-19T06:25:02.066Z] [pid:36588] [INFO] [Lersha] POST https://dev-api-integration.lersha.com/api/v1/nib/insuranceConfirmation
+[2026-06-19T06:25:02.070Z] [pid:36588] [ERROR] [insurance-payments] Failed to notify Lersha: TypeError: fetch failed
+[2026-06-19T06:49:26.188Z] [pid:43768] [ERROR] [processInsurancePayment] External disbursement failed for loan cmqkkj3sh000d5u5qfhnu2r5s: Upstream disbursement failed
+[2026-06-19T06:49:26.954Z] [pid:43768] [ERROR] [processInsurancePayment] External disbursement failed for loan cmqkkja3l000q5u5qesiw4kkj: Upstream disbursement failed
+[2026-06-19T06:49:26.973Z] [pid:43768] [INFO] [Lersha] POST https://dev-api-integration.lersha.com/api/v1/nib/insuranceConfirmation
+[2026-06-19T06:49:37.550Z] [pid:43768] [ERROR] [insurance-payments] Failed to notify Lersha: TypeError: fetch failed
+[2026-06-19T06:58:50.613Z] [pid:43768] [ERROR] [processInsurancePayment] External disbursement failed for loan cmqkkvd0q00185u5qlwq6d3bs: Upstream disbursement failed
+[2026-06-19T06:58:51.104Z] [pid:43768] [ERROR] [processInsurancePayment] External disbursement failed for loan cmqkkvdn1001l5u5q6pi7tnzo: Upstream disbursement failed
+[2026-06-19T06:58:51.139Z] [pid:43768] [INFO] [Lersha] POST https://dev-api-integration.lersha.com/api/v1/nib/insuranceConfirmation
+[2026-06-19T06:59:01.781Z] [pid:43768] [ERROR] [insurance-payments] Failed to notify Lersha: TypeError: fetch failed

@@ -1,0 +1,2 @@
+[2026-06-18T21:27:53.884Z] [pid:35848] [INFO] [Lersha] POST https://dev-api-integration.lersha.com/api/v1/nib/loan-decision
+[2026-06-18T21:27:54.371Z] [pid:35848] [ERROR] [Lersha] https://dev-api-integration.lersha.com/api/v1/nib/loan-decision responded 502: undefined

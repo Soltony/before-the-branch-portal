@@ -93,6 +93,15 @@ interface LoanRequest {
   createdAt: string;
 }
 
+interface LoanContract {
+  id: string;
+  status: string;
+  contractCode: string;
+  languageCode: string;
+  signedAt: string | null;
+  createdAt: string;
+}
+
 interface Farmer {
   id: string;
   farmerId: string;
@@ -114,6 +123,7 @@ interface Farmer {
   isUpdated?: boolean;
   loanPurposes: LoanPurpose[];
   loanRequests: LoanRequest[];
+  loanContracts: LoanContract[];
 }
 
 // ── Helpers ────────────────────────────────────────
@@ -128,9 +138,11 @@ const statusVariant = (status: string): 'default' | 'secondary' | 'destructive' 
   switch (status.toUpperCase()) {
     case 'APPROVED':
     case 'DISBURSED':
+    case 'SIGNED':
       return 'default';
     case 'DECLINED':
     case 'REJECTED':
+    case 'EXPIRED':
       return 'destructive';
     case 'PENDING':
     case 'PENDING_UPDATE':
@@ -146,6 +158,19 @@ const statusLabel = (status: string): string => {
   if (status.toUpperCase() === 'OTP_VERIFIED') return 'AUTO DISBURSING';
   if (status.toUpperCase() === 'PENDING_OTP') return 'PENDING OTP';
   return farmerStatusLabel(status);
+};
+
+const contractStatusLabel = (status: string): string => {
+  switch (status.toUpperCase()) {
+    case 'SIGNED':
+      return 'SIGNED';
+    case 'PENDING':
+      return 'AWAITING SIGNATURE';
+    case 'EXPIRED':
+      return 'EXPIRED';
+    default:
+      return status.replace(/_/g, ' ');
+  }
 };
 
 const ITEMS_PER_PAGE = 20;
@@ -374,6 +399,7 @@ export default function FarmerLoansPage() {
                   <TableHead>Credit Score</TableHead>
                   <TableHead>Registration</TableHead>
                   <TableHead>Loan Status</TableHead>
+                  <TableHead>Contract</TableHead>
                   <TableHead>Registered</TableHead>
                   <TableHead>Last Updated</TableHead>
                   <TableHead>Actions</TableHead>
@@ -382,13 +408,14 @@ export default function FarmerLoansPage() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={11} className="h-24 text-center">
+                    <TableCell colSpan={12} className="h-24 text-center">
                       <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                     </TableCell>
                   </TableRow>
                 ) : farmers.length > 0 ? (
                   farmers.map((farmer) => {
                     const latestRequest = farmer.loanRequests[0];
+                    const latestContract = farmer.loanContracts?.[0];
                     const isUpdated =
                       farmer.isUpdated ??
                       new Date(farmer.updatedAt).getTime() -
@@ -436,6 +463,22 @@ export default function FarmerLoansPage() {
                           ) : (
                             <span className="text-xs text-muted-foreground">
                               No loan request
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {latestContract ? (
+                            <div className="flex flex-col gap-1">
+                              <Badge variant={statusVariant(latestContract.status)}>
+                                {contractStatusLabel(latestContract.status)}
+                              </Badge>
+                              <span className="font-mono text-[10px] text-muted-foreground">
+                                {latestContract.contractCode}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              No contract
                             </span>
                           )}
                         </TableCell>
@@ -498,7 +541,7 @@ export default function FarmerLoansPage() {
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={11} className="h-24 text-center">
+                    <TableCell colSpan={12} className="h-24 text-center">
                       No farmers found.
                     </TableCell>
                   </TableRow>

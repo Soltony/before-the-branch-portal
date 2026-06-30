@@ -45,6 +45,18 @@ export async function GET(req: NextRequest) {
               createdAt: true,
             },
           },
+          loanContracts: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: {
+              id: true,
+              status: true,
+              contractCode: true,
+              languageCode: true,
+              signedAt: true,
+              createdAt: true,
+            },
+          },
         },
         orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
         skip: (page - 1) * limit,

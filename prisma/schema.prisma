@@ -27,6 +27,7 @@ model User {
   sessions                    Session[]
   loanProviderId              String?
   loanProvider                LoanProvider?         @relation(fields: [loanProviderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  branchCode                  Int?
   createdChanges              PendingChange[]       @relation("CreatedBy")
   approvedChanges             PendingChange[]       @relation("ApprovedBy")
   updatedDisbursementControls DisbursementControl[] @relation("DisbursementControlUpdatedBy")

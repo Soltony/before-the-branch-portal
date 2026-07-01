@@ -21,7 +21,8 @@ export type TermsLanguageField =
   | "contentOm"
   | "contentTi"
   | "contentSo"
-  | "contentSid";
+  | "contentSid"
+  | "contentEn";
 
 export const CONTRACT_LANGUAGES: readonly ContractLanguage[] = [
   { code: "am", label: "Amharic", field: "contentAm" },
@@ -29,6 +30,7 @@ export const CONTRACT_LANGUAGES: readonly ContractLanguage[] = [
   { code: "ti", label: "Tigrigna", field: "contentTi" },
   { code: "so", label: "Somali", field: "contentSo" },
   { code: "sid", label: "Sidama", field: "contentSid" },
+  { code: "en", label: "English", field: "contentEn" },
 ] as const;
 
 /** Tuple of supported codes, e.g. for building a zod enum. */

@@ -81,9 +81,7 @@ model DisbursementControl {
   @@index([updatedById])
 }
 
-// Single-row table with id = 'global'. Bank-configured tolerance (percent) for
-// Lersha woreda price changes. A price change is rejected if it moves any
-// farmer's unit price by more than ±thresholdPercent. Default ±10%.
+
 model PriceChangeControl {
   id               String   @id @default("global")
   thresholdPercent Float    @default(10)
@@ -480,6 +478,7 @@ model TermsAndConditions {
   contentTi   String?             @db.NVarChar(Max) // Tigrigna
   contentSo   String?             @db.NVarChar(Max) // Somali
   contentSid  String?             @db.NVarChar(Max) // Sidama
+  contentEn   String?             @db.NVarChar(Max) // English
   version     Int
   isActive    Boolean             @default(false)
   publishedAt DateTime
@@ -869,6 +868,7 @@ model LershaLoanPurpose {
   quantity            Float?
   unitOfMeasurement   String?
   unitPrice           Float?
+  originalUnitPrice   Float?
   totalCost           Float
   agroDealerName      String?
   agroDealerAccountNo String?
@@ -900,9 +900,7 @@ model LershaLoanRequest {
   @@index([referenceNo])
 }
 
-// Per-insurer mapping: links an insurer name (as captured on the "Insurance"
-// LershaLoanPurpose) to the NIB insurance id and the bank account credited when
-// an insurance payment is approved. Managed by admins in the portal.
+
 model InsuranceAccount {
   id            String                   @id @default(cuid())
   insuranceName String                   @unique // matches LershaLoanPurpose.insuranceName
@@ -916,12 +914,6 @@ model InsuranceAccount {
   @@index([status])
 }
 
-// One row per farmer per insurance-payment request. Lersha sends a list of
-// farmerIDs to /api/v1/nib/insuranceRequest; we resolve each farmer's insurance
-// cost (from the "Insurance" LershaLoanPurpose captured at registration). An
-// admin reviews and approves; approval books a loan + credits the insurer
-// account (like other loan purposes) and we POST the per-farmer result back to
-// Lersha at /nib/insuranceConfirmation.
 model LershaInsurancePayment {
   id                         String            @id @default(cuid())
   batchId                    String? // groups all payments created from one /insuranceRequest call
@@ -960,10 +952,7 @@ model LershaInsurancePayment {
 //          DIGITAL LOAN REPAYMENT (CBS / NPL)       //
 // ================================================= //
 
-// One row per outbound bulk upload of NPL account numbers to the CBS
-// (core banking) "unpaid account bulk upload" endpoint. We persist the
-// snapshot of accounts that were sent and the CBS response so we can
-// audit the daily reconciliation.
+
 model NplCbsUploadBatch {
   id                   String   @id @default(cuid())
   triggeredByUserId    String?  // null when triggered by the scheduled worker
@@ -989,10 +978,6 @@ model NplCbsUploadBatch {
   @@index([startedAt])
 }
 
-// One row per credit notification received from the CBS for a previously
-// uploaded NPL account. The notification triggers an immediate auto-repay
-// attempt against the CBS /repay endpoint and a corresponding internal
-// ledger posting via the standard payment pipeline.
 model NplCreditNotification {
   id                  String   @id @default(cuid())
   // Notification identity / idempotency.
@@ -1029,26 +1014,7 @@ model NplCreditNotification {
   @@index([loanId])
 }
 
-// ================================================= //
-//            PHONE NUMBER CHANGE REQUESTS           //
-// ================================================= //
 
-model PhoneChangeRequest {
-  id              String    @id @default(cuid())
-  oldPhoneNumber  String
-  newPhoneNumber  String
-  reason          String    @db.NVarChar(Max)
-  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
-  requestedById   String
-  approvedById    String?
-  approvedAt      DateTime?
-  rejectionReason String?   @db.Text
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
 
-  @@index([status])
-  @@index([oldPhoneNumber])
-  @@index([newPhoneNumber])
-}
 
 

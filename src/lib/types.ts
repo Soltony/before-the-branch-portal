@@ -405,6 +405,7 @@ export interface TermsAndConditions {
   contentTi?: string | null;
   contentSo?: string | null;
   contentSid?: string | null;
+  contentEn?: string | null;
   version: number;
   isActive: boolean;
   publishedAt: Date;

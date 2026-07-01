@@ -2807,6 +2807,7 @@ export function SettingsClient({ initialProviders, initialTaxConfig }: { initial
                                     <TabsTrigger value="eligibility">Eligibility</TabsTrigger>
                                     <TabsTrigger value="agreement">Borrower Agreement</TabsTrigger>
                                     <TabsTrigger value="tax">Tax</TabsTrigger>
+                                    <TabsTrigger value="priceChange">Price Change</TabsTrigger>
                                 </TabsList>
                                 <TabsContent value="providers">
                                     <ProvidersTab providers={providers} onProvidersChange={handleProvidersChange} />
@@ -2839,6 +2840,9 @@ export function SettingsClient({ initialProviders, initialTaxConfig }: { initial
                                 </TabsContent>
                                 <TabsContent value="tax">
                                     <TaxTab initialTaxConfig={initialTaxConfig} />
+                                </TabsContent>
+                                <TabsContent value="priceChange">
+                                    <PriceChangeTab />
                                 </TabsContent>
                             </Tabs>
                         ) : (
@@ -2991,6 +2995,125 @@ function AgreementTab({ provider, onProviderUpdate }: { provider: LoanProvider, 
                 </Button>
             </div>
         </div>
+    );
+}
+
+// --------------------------------------------------
+// PRICE CHANGE CONTROL TAB
+// --------------------------------------------------
+function PriceChangeTab() {
+    const { toast } = useToast();
+    const { canModule } = usePermissions();
+    const canRead = canModule('settings', 'read');
+    const canUpdate = canModule('settings', 'update');
+
+    const [thresholdPercent, setThresholdPercent] = useState<string>('');
+    const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            setIsLoading(true);
+            try {
+                const res = await fetch('/api/settings/price-change-control');
+                if (!res.ok) throw new Error('Failed to load the price change threshold.');
+                const data = await res.json();
+                if (!cancelled) {
+                    setThresholdPercent(String(data.thresholdPercent ?? ''));
+                    setUpdatedAt(data.updatedAt ?? null);
+                }
+            } catch (error: any) {
+                if (!cancelled) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+            } finally {
+                if (!cancelled) setIsLoading(false);
+            }
+        };
+        if (canRead) load();
+        else setIsLoading(false);
+        return () => { cancelled = true; };
+    }, [canRead, toast]);
+
+    const handleSave = async () => {
+        const value = Number(thresholdPercent);
+        if (!Number.isFinite(value) || value <= 0 || value > 100) {
+            toast({ title: 'Invalid value', description: 'Enter a tolerance between 0 (exclusive) and 100 percent.', variant: 'destructive' });
+            return;
+        }
+        setIsSaving(true);
+        try {
+            const res = await fetch('/api/settings/price-change-control', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ thresholdPercent: value }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error((Array.isArray(data?.error) ? data.error[0]?.message : data?.error) || 'Failed to save.');
+            setThresholdPercent(String(data.thresholdPercent));
+            setUpdatedAt(data.updatedAt ?? null);
+            toast({ title: 'Saved', description: `Price change tolerance set to ±${data.thresholdPercent}%.` });
+        } catch (error: any) {
+            toast({ title: 'Error', description: error.message, variant: 'destructive' });
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <Card>
+            <CardHeader>
+                <CardTitle>Price Change Control</CardTitle>
+                <CardDescription>
+                    Maximum tolerance for a Lersha product price change. A change is rejected
+                    when it moves a product&apos;s unit price by more than this percentage away
+                    from its <span className="font-medium">original registered price</span>.
+                    Products are also locked once their loan has been disbursed.
+                </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                {isLoading ? (
+                    <div className="space-y-3">
+                        <Skeleton className="h-5 w-40" />
+                        <Skeleton className="h-10 w-64" />
+                    </div>
+                ) : (
+                    <>
+                        <div className="max-w-xs">
+                            <Label htmlFor="priceChangeThreshold">Tolerance (%)</Label>
+                            <div className="relative mt-1">
+                                <Input
+                                    id="priceChangeThreshold"
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step="0.1"
+                                    value={thresholdPercent}
+                                    onChange={(e) => setThresholdPercent(e.target.value)}
+                                    disabled={!canUpdate || isSaving}
+                                    className="pr-8"
+                                />
+                                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">%</span>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                e.g. 10 allows up to ±10% from the original price.
+                            </p>
+                        </div>
+                        {updatedAt && (
+                            <p className="text-xs text-muted-foreground">
+                                Last updated: {new Date(updatedAt).toLocaleString()}
+                            </p>
+                        )}
+                    </>
+                )}
+            </CardContent>
+            <CardFooter>
+                <Button onClick={handleSave} disabled={isLoading || isSaving || !canUpdate}>
+                    {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                    Save Threshold
+                </Button>
+            </CardFooter>
+        </Card>
     );
 }
 

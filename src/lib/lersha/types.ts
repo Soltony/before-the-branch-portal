@@ -16,10 +16,13 @@ const insuranceSchema = z.object({
 
 const loanPurposeItemSchema = z.object({
   loanPurpose: z.string().min(1),
-  specificVarietyName: z.string().optional(),
-  quantity: z.number().optional(),
-  unitOfMeasurement: z.string().optional(),
-  unitPrice: z.number().optional(),
+  // Insurance rows carry no variety/quantity/unit/price, so Lersha sends these
+  // as explicit `null`. `.nullish()` accepts both `null` and absent (undefined);
+  // plain `.optional()` rejects `null`. Downstream sync coerces with `?? null`.
+  specificVarietyName: z.string().nullish(),
+  quantity: z.number().nullish(),
+  unitOfMeasurement: z.string().nullish(),
+  unitPrice: z.number().nullish(),
   totalCost: z.number(),
   agro_dealer: agroDealerSchema.optional(),
   Insurance: insuranceSchema.optional(),

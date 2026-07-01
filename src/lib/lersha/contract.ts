@@ -56,6 +56,7 @@ export function pickContractText(
     contentTi?: string | null;
     contentSo?: string | null;
     contentSid?: string | null;
+    contentEn?: string | null;
   },
   languageCode: string,
 ): string {

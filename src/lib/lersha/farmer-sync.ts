@@ -83,11 +83,24 @@ export async function syncLoanPurposes(
   }[] = [];
 
   for (const purpose of incomingPurposes) {
+    // For an "Insurance" purpose Lersha sends the insurer in the agro_dealer
+    // block (name + account number), not in the optional `Insurance` field.
+    // `insuranceName` is the key every downstream step matches on — the
+    // InsuranceAccount mapping, the payment request's credit-account resolution,
+    // and approval — so leaving it null is exactly what makes a configured
+    // insurer still show "Not configured". Fall back to the agro-dealer name and
+    // reuse the one value for both the dedup key and the stored row.
+    const insuranceName =
+      purpose.Insurance?.insurance_name ??
+      (purpose.loanPurpose.trim().toLowerCase() === "insurance"
+        ? purpose.agro_dealer?.agro_dealer_name ?? null
+        : null);
+
     const key = loanPurposeMatchKey({
       loanPurpose: purpose.loanPurpose,
       specificVarietyName: purpose.specificVarietyName,
       totalCost: purpose.totalCost,
-      insuranceName: purpose.Insurance?.insurance_name ?? null,
+      insuranceName,
     });
     incomingKeys.add(key);
     const matched = existingByKey.get(key);
@@ -98,11 +111,16 @@ export async function syncLoanPurposes(
       quantity: purpose.quantity ?? null,
       unitOfMeasurement: purpose.unitOfMeasurement ?? null,
       unitPrice: purpose.unitPrice ?? null,
+      // Registration is the source of the baseline: the bank's price-change
+      // tolerance is always measured against this registered price, not the
+      // last value a /priceChange call wrote. (The priceChange endpoint updates
+      // `unitPrice` only and never touches `originalUnitPrice`.)
+      originalUnitPrice: purpose.unitPrice ?? null,
       totalCost: purpose.totalCost,
       agroDealerName: purpose.agro_dealer?.agro_dealer_name ?? null,
       agroDealerAccountNo:
         purpose.agro_dealer?.agro_dealer_account_number ?? null,
-      insuranceName: purpose.Insurance?.insurance_name ?? null,
+      insuranceName,
     };
 
     if (matched) {

@@ -1464,6 +1464,7 @@ async function applyChange(
           contentTi,
           contentSo,
           contentSid,
+          contentEn,
         } = data.updated;
         await tx.termsAndConditions.updateMany({
           where: { providerId },
@@ -1485,6 +1486,7 @@ async function applyChange(
             contentTi: contentTi ?? null,
             contentSo: contentSo ?? null,
             contentSid: contentSid ?? null,
+            contentEn: contentEn ?? null,
             version: newVersionNumber,
             isActive: true,
             publishedAt: new Date(),

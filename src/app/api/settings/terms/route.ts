@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
 
     try {
         const body = await req.json();
-        const { providerId, content, contentAm, contentOm, contentTi, contentSo, contentSid } = body;
+        const { providerId, content, contentAm, contentOm, contentTi, contentSo, contentSid, contentEn } = body;
 
         if (!providerId || !content) {
             return NextResponse.json({ error: 'Provider ID and content are required' }, { status: 400 });
@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
                     contentTi: contentTi ?? null,
                     contentSo: contentSo ?? null,
                     contentSid: contentSid ?? null,
+                    contentEn: contentEn ?? null,
                     version: newVersionNumber,
                     isActive: true,
                     publishedAt: new Date(),

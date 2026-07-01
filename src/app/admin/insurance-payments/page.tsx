@@ -68,12 +68,12 @@ import {
   X,
   CheckCircle,
   XCircle,
-  Plus,
   Pencil,
   Trash2,
   AlertTriangle,
   Eye,
   Users,
+  RefreshCw,
 } from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────
@@ -878,10 +878,13 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
   const { toast } = useToast();
   const [accounts, setAccounts] = useState<InsuranceAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const emptyForm = { insuranceName: '', insuranceId: '', accountNumber: '', status: 'ACTIVE' };
-  const [form, setForm] = useState<typeof emptyForm & { id?: string }>(emptyForm);
+  // Insurer name + account number are sourced from approved farmers; only the
+  // NIB insurance id and status are editable here.
+  const emptyForm = { id: '', insuranceName: '', insuranceId: '', accountNumber: '', status: 'ACTIVE' };
+  const [form, setForm] = useState<typeof emptyForm>(emptyForm);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<InsuranceAccount | null>(null);
 
@@ -899,34 +902,67 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
     }
   }, [toast]);
 
-  useEffect(() => {
-    fetchAccounts();
-  }, [fetchAccounts]);
+  // Fetch insurer name + account number from approved farmers and upsert them.
+  const syncFromFarmers = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      setIsSyncing(true);
+      try {
+        const res = await fetch('/api/insurance-accounts/sync', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to sync insurance accounts.');
+        setAccounts(data.accounts ?? []);
+        if (!opts?.silent) {
+          const changed = (data.created ?? 0) + (data.updated ?? 0);
+          toast({
+            title: 'Synced from farmers',
+            description: changed > 0
+              ? `${data.created} added, ${data.updated} updated (${data.total} insurer${data.total === 1 ? '' : 's'}).`
+              : `Up to date — ${data.total} insurer${data.total === 1 ? '' : 's'}.`,
+          });
+        }
+      } catch (error: any) {
+        if (!opts?.silent) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+        // Fall back to whatever is already stored.
+        fetchAccounts();
+      } finally {
+        setIsSyncing(false);
+        setIsLoading(false);
+      }
+    },
+    [toast, fetchAccounts],
+  );
 
-  const openCreate = () => {
-    setForm(emptyForm);
-    setDialogOpen(true);
-  };
+  useEffect(() => {
+    // Auto-fetch from approved farmers on open; falls back to the stored list.
+    syncFromFarmers({ silent: true });
+  }, [syncFromFarmers]);
+
   const openEdit = (a: InsuranceAccount) => {
-    setForm({ ...a });
+    setForm({
+      id: a.id,
+      insuranceName: a.insuranceName,
+      insuranceId: a.insuranceId,
+      accountNumber: a.accountNumber,
+      status: a.status,
+    });
     setDialogOpen(true);
   };
 
   const saveForm = async () => {
-    if (!form.insuranceName.trim() || !form.insuranceId.trim() || !form.accountNumber.trim()) {
-      toast({ title: 'Error', description: 'All fields are required.', variant: 'destructive' });
+    if (!form.insuranceId.trim()) {
+      toast({ title: 'Error', description: 'NIB insurance ID is required.', variant: 'destructive' });
       return;
     }
     setIsSubmitting(true);
     try {
       const res = await fetch('/api/insurance-accounts', {
-        method: form.id ? 'PUT' : 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ id: form.id, insuranceId: form.insuranceId, status: form.status }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Save failed.');
-      toast({ title: form.id ? 'Account updated' : 'Account created' });
+      toast({ title: 'Account updated' });
       setDialogOpen(false);
       fetchAccounts();
     } catch (error: any) {
@@ -961,14 +997,15 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
         <div>
           <CardTitle>Insurance Accounts</CardTitle>
           <CardDescription>
-            Map each insurer (by name, as sent on the farmer&apos;s insurance loan purpose)
-            to its NIB insurance ID and the bank account credited on approval.
+            Auto-fetched from approved farmers: the insurer name and account number
+            come from each farmer&apos;s insurance loan purpose. Only the NIB insurance
+            ID and ACTIVE/INACTIVE status are editable here.
           </CardDescription>
         </div>
         {canManage && (
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4 mr-1" />
-            Add Account
+          <Button size="sm" variant="outline" onClick={() => syncFromFarmers()} disabled={isSyncing}>
+            <RefreshCw className={`h-4 w-4 mr-1 ${isSyncing ? 'animate-spin' : ''}`} />
+            Sync from Farmers
           </Button>
         )}
       </CardHeader>
@@ -1030,7 +1067,8 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
             ) : (
               <TableRow>
                 <TableCell colSpan={5} className="h-24 text-center">
-                  No insurance accounts configured yet.
+                  No insurers found yet. They appear automatically once farmers with an
+                  insurance purpose are approved. Use &quot;Sync from Farmers&quot; to refresh.
                 </TableCell>
               </TableRow>
             )}
@@ -1042,10 +1080,11 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{form.id ? 'Edit Insurance Account' : 'Add Insurance Account'}</DialogTitle>
+            <DialogTitle>Edit Insurance Account</DialogTitle>
             <DialogDescription>
-              The insurer name must match the &quot;insurance_name&quot; sent by Lersha on the
-              farmer&apos;s insurance loan purpose.
+              The insurer name and account number are sourced from farmer registration
+              and can&apos;t be edited here. Set the NIB insurance ID used to credit
+              this insurer, and the status.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -1054,26 +1093,28 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
               <Input
                 id="insuranceName"
                 value={form.insuranceName}
-                onChange={(e) => setForm((f) => ({ ...f, insuranceName: e.target.value }))}
-                className="mt-1"
+                readOnly
+                disabled
+                className="mt-1 bg-muted"
               />
             </div>
             <div>
-              <Label htmlFor="insuranceId">Insurance ID</Label>
+              <Label htmlFor="accountNumber">Account Number (from farmer)</Label>
+              <Input
+                id="accountNumber"
+                value={form.accountNumber}
+                readOnly
+                disabled
+                className="mt-1 bg-muted font-mono"
+              />
+            </div>
+            <div>
+              <Label htmlFor="insuranceId">NIB Insurance ID</Label>
               <Input
                 id="insuranceId"
                 value={form.insuranceId}
                 onChange={(e) => setForm((f) => ({ ...f, insuranceId: e.target.value }))}
                 placeholder="e.g. INSURANCE001"
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <Label htmlFor="accountNumber">Account Number</Label>
-              <Input
-                id="accountNumber"
-                value={form.accountNumber}
-                onChange={(e) => setForm((f) => ({ ...f, accountNumber: e.target.value }))}
                 className="mt-1"
               />
             </div>
@@ -1099,7 +1140,7 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
             </DialogClose>
             <Button onClick={saveForm} disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {form.id ? 'Save' : 'Create'}
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>

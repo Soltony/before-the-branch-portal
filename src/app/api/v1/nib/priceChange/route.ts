@@ -74,11 +74,41 @@ export async function POST(req: NextRequest) {
       purposes.map((p) => [p.productId as string, p]),
     );
 
+    // A product's price is locked once its loan has been disbursed: a regular
+    // loan purpose is disbursed via a DISBURSED LershaLoanRequest, while an
+    // insurance purpose is "disbursed" once its LershaInsurancePayment is
+    // SUCCESS. Either way the bank has already paid out against that price, so a
+    // change must be rejected.
+    const disbursedRequests = await prisma.lershaLoanRequest.findMany({
+      where: { productId: { in: productIds }, status: "DISBURSED" },
+      select: { productId: true },
+    });
+    const disbursedProductIds = new Set(
+      disbursedRequests
+        .map((r) => r.productId)
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    const purposeIds = purposes.map((p) => p.id);
+    const paidInsurancePayments =
+      purposeIds.length > 0
+        ? await prisma.lershaInsurancePayment.findMany({
+            where: { loanPurposeId: { in: purposeIds }, status: "SUCCESS" },
+            select: { loanPurposeId: true },
+          })
+        : [];
+    const paidInsurancePurposeIds = new Set(
+      paidInsurancePayments
+        .map((p) => p.loanPurposeId)
+        .filter((id): id is string => Boolean(id)),
+    );
+
     type Violation = {
       farmerId: string;
       productId: string;
       reason: string;
       oldUnitPrice?: number | null;
+      originalUnitPrice?: number | null;
       newUnitPrice?: number;
       changePercent?: number;
       allowedPercent?: number;
@@ -87,7 +117,7 @@ export async function POST(req: NextRequest) {
       id: string;
       farmerId: string;
       productId: string;
-      oldUnitPrice: number;
+      oldUnitPrice: number | null;
       newUnitPrice: number;
       newTotalCost: number | null;
     };
@@ -115,21 +145,43 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      // Task 1: once the loan for this product is disbursed, its price is locked.
+      if (
+        disbursedProductIds.has(change.productId) ||
+        paidInsurancePurposeIds.has(purpose.id)
+      ) {
+        violations.push({
+          farmerId: change.farmerId,
+          productId: change.productId,
+          reason: "LOAN_ALREADY_DISBURSED",
+          oldUnitPrice: purpose.unitPrice,
+          newUnitPrice: change.newUnitPrice,
+        });
+        continue;
+      }
+
       const oldUnitPrice = purpose.unitPrice;
-      if (oldUnitPrice == null || oldUnitPrice <= 0) {
+      // Task 3: the tolerance is measured against the ORIGINAL registered price,
+      // not the last changed value, so repeated small changes can't drift the
+      // price past the threshold. Fall back to the current price for any legacy
+      // row whose baseline wasn't captured/backfilled.
+      const baselineUnitPrice = purpose.originalUnitPrice ?? oldUnitPrice;
+      if (baselineUnitPrice == null || baselineUnitPrice <= 0) {
         // No baseline price → can't validate a percentage change.
         violations.push({
           farmerId: change.farmerId,
           productId: change.productId,
           reason: "MISSING_BASELINE_PRICE",
           oldUnitPrice,
+          originalUnitPrice: purpose.originalUnitPrice,
           newUnitPrice: change.newUnitPrice,
         });
         continue;
       }
 
       const changePercent =
-        (Math.abs(change.newUnitPrice - oldUnitPrice) / oldUnitPrice) * 100;
+        (Math.abs(change.newUnitPrice - baselineUnitPrice) / baselineUnitPrice) *
+        100;
       // Small epsilon so an exact ±threshold change isn't rejected by rounding.
       if (changePercent > thresholdPercent + 1e-9) {
         violations.push({
@@ -137,6 +189,7 @@ export async function POST(req: NextRequest) {
           productId: change.productId,
           reason: "EXCEEDS_THRESHOLD",
           oldUnitPrice,
+          originalUnitPrice: baselineUnitPrice,
           newUnitPrice: change.newUnitPrice,
           changePercent: Number(changePercent.toFixed(4)),
           allowedPercent: thresholdPercent,

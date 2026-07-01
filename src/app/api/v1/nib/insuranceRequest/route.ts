@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import { insuranceRequestSchema } from "@/lib/lersha/types";
 import { createAuditLog } from "@/lib/audit-log";
+import { syncInsuranceAccountsFromFarmers } from "@/lib/lersha/insurance-accounts";
 
 /**
  * POST /api/v1/nib/insuranceRequest
@@ -47,6 +48,16 @@ export async function POST(req: NextRequest) {
         { success: false, message: "Failed to fetch farmers" },
         { status: 500 },
       );
+    }
+
+    // Insurer mappings are derived from farmer registration data, so make sure
+    // the ones for these farmers exist (with a default NIB id) before resolving.
+    try {
+      await syncInsuranceAccountsFromFarmers({
+        farmerInternalIds: farmers.map((f) => f.id),
+      });
+    } catch (e) {
+      console.error("[insuranceRequest] Failed to sync insurance accounts:", e);
     }
 
     const accounts = await prisma.insuranceAccount.findMany({

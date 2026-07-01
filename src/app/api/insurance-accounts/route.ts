@@ -20,10 +20,12 @@ async function authorize(action: PermissionSet) {
   return { user };
 }
 
-const accountSchema = z.object({
-  insuranceName: z.string().min(1),
+// Insurer name and account number are sourced from approved farmers (see
+// /api/insurance-accounts/sync), so only the NIB insurance id and the
+// ACTIVE/INACTIVE status are editable here.
+const updateSchema = z.object({
+  id: z.string().min(1),
   insuranceId: z.string().min(1),
-  accountNumber: z.string().min(1),
   status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
 });
 
@@ -43,58 +45,19 @@ export async function GET() {
   }
 }
 
-// POST — create a mapping.
-export async function POST(req: NextRequest) {
-  const auth = await authorize("create");
-  if (auth.error) return auth.error;
-
-  try {
-    const data = accountSchema.parse(await req.json());
-    const created = await prisma.insuranceAccount.create({
-      data: {
-        insuranceName: data.insuranceName.trim(),
-        insuranceId: data.insuranceId.trim(),
-        accountNumber: data.accountNumber.trim(),
-        status: data.status ?? "ACTIVE",
-      },
-    });
-    await createAuditLog({
-      actorId: auth.user!.id,
-      action: "INSURANCE_ACCOUNT_CREATED",
-      entity: "InsuranceAccount",
-      entityId: created.id,
-      details: { ...created },
-    });
-    return NextResponse.json(created, { status: 201 });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: error.errors }, { status: 400 });
-    }
-    if ((error as any)?.code === "P2002") {
-      return NextResponse.json(
-        { error: "An insurance account with this insurer name already exists." },
-        { status: 409 },
-      );
-    }
-    console.error("[insurance-accounts POST] Error:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-  }
-}
-
-// PUT — update a mapping.
+// PUT — update the admin-controlled fields (NIB insurance id + status). The
+// insurer name and account number come from farmer data and are not editable.
 export async function PUT(req: NextRequest) {
   const auth = await authorize("update");
   if (auth.error) return auth.error;
 
   try {
-    const data = accountSchema.extend({ id: z.string().min(1) }).parse(await req.json());
+    const data = updateSchema.parse(await req.json());
     const updated = await prisma.insuranceAccount.update({
       where: { id: data.id },
       data: {
-        insuranceName: data.insuranceName.trim(),
         insuranceId: data.insuranceId.trim(),
-        accountNumber: data.accountNumber.trim(),
-        status: data.status ?? "ACTIVE",
+        ...(data.status ? { status: data.status } : {}),
       },
     });
     await createAuditLog({
@@ -108,12 +71,6 @@ export async function PUT(req: NextRequest) {
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors }, { status: 400 });
-    }
-    if ((error as any)?.code === "P2002") {
-      return NextResponse.json(
-        { error: "An insurance account with this insurer name already exists." },
-        { status: 409 },
-      );
     }
     console.error("[insurance-accounts PUT] Error:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

@@ -67,6 +67,7 @@ import {
   isFarmerPendingApproval,
   farmerStatusLabel,
 } from '@/lib/lersha/farmer-status';
+import { deriveLoanRequestDisplayStatus } from '@/lib/lersha/farmer-purpose-status';
 
 // ── Types ──────────────────────────────────────────
 
@@ -89,6 +90,7 @@ interface LoanRequest {
   status: string;
   referenceNo: string | null;
   otpVerified: boolean;
+  otpExpiresAt: string | null;
   lershaDecisionSentAt: string | null;
   createdAt: string;
 }
@@ -457,9 +459,15 @@ export default function FarmerLoansPage() {
                         </TableCell>
                         <TableCell>
                           {latestRequest ? (
-                            <Badge variant={statusVariant(latestRequest.status)}>
-                              {statusLabel(latestRequest.status)}
-                            </Badge>
+                            (() => {
+                              const requestStatus =
+                                deriveLoanRequestDisplayStatus(latestRequest);
+                              return (
+                                <Badge variant={statusVariant(requestStatus)}>
+                                  {statusLabel(requestStatus)}
+                                </Badge>
+                              );
+                            })()
                           ) : (
                             <span className="text-xs text-muted-foreground">
                               No loan request

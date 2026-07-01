@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
               status: true,
               referenceNo: true,
               otpVerified: true,
+              otpExpiresAt: true,
               lershaDecisionSentAt: true,
               createdAt: true,
             },

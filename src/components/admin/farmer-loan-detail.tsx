@@ -42,6 +42,8 @@ export const farmerStatusVariant = (
     case 'DECLINED':
     case 'REJECTED':
       return 'destructive';
+    case 'EXPIRED':
+      return 'outline';
     case 'PENDING':
     case 'PENDING_UPDATE':
       return 'secondary';
@@ -158,6 +160,7 @@ export interface FarmerDetailData {
     id: string;
     productId: string;
     status: string;
+    displayStatus: string;
     referenceNo: string | null;
     otpVerified: boolean;
     remainingBalance: number | null;
@@ -468,8 +471,8 @@ export function FarmerLoanDetail({
                 {farmer.loanRequests.map((req) => (
                   <TableRow key={req.id}>
                     <TableCell>
-                      <Badge variant={farmerStatusVariant(req.status)}>
-                        {req.status.replace(/_/g, ' ')}
+                      <Badge variant={farmerStatusVariant(req.displayStatus)}>
+                        {req.displayStatus.replace(/_/g, ' ')}
                       </Badge>
                     </TableCell>
                     <TableCell className="font-mono text-xs">

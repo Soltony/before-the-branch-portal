@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import {
   derivePurposeDisplayStatus,
+  deriveLoanRequestDisplayStatus,
   type PurposeDisplayStatus,
 } from "@/lib/lersha/farmer-purpose-status";
 
@@ -41,9 +42,18 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
       orderBy: { disbursedDate: "desc" },
     });
 
-    const requestsByProduct = new Map(
-      farmer.loanRequests.map((r) => [r.productId, r]),
-    );
+    // loanRequests are ordered newest-first, and a product can have several
+    // requests (e.g. retries after an OTP expired). Keep the most recent request
+    // per product so the purpose reflects the latest attempt, not a stale one.
+    const requestsByProduct = new Map<
+      string,
+      (typeof farmer.loanRequests)[number]
+    >();
+    for (const r of farmer.loanRequests) {
+      if (!requestsByProduct.has(r.productId)) {
+        requestsByProduct.set(r.productId, r);
+      }
+    }
 
     const loanPurposesWithStatus = farmer.loanPurposes.map((purpose) => {
       const loanRequest = purpose.productId
@@ -76,6 +86,8 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
               status: loanRequest.status,
               createdAt: loanRequest.createdAt,
               disbursementConfirmedAt: loanRequest.disbursementConfirmedAt,
+              otpExpiresAt: loanRequest.otpExpiresAt,
+              otpVerified: loanRequest.otpVerified,
             }
           : null,
         linkedLoan: linkedLoan
@@ -156,6 +168,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
           id: r.id,
           productId: r.productId,
           status: r.status,
+          displayStatus: deriveLoanRequestDisplayStatus(r),
           referenceNo: r.referenceNo,
           otpVerified: r.otpVerified,
           remainingBalance: r.remainingBalance,

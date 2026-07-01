@@ -19,12 +19,42 @@ export type PurposeStatusInput = {
     status: string;
     createdAt: Date;
     disbursementConfirmedAt: Date | null;
+    otpExpiresAt?: Date | string | null;
+    otpVerified?: boolean;
   } | null;
   linkedLoan: {
     repaymentStatus: string;
     loanAmount: number;
   } | null;
 };
+
+/**
+ * A loan request is "expired" when its OTP window lapsed before the farmer
+ * verified it. The DB never mutates the stored status in this case (expiry is
+ * only checked lazily at confirmation time), so callers must derive it.
+ */
+export function isLoanRequestExpired(req: {
+  status: string;
+  otpVerified?: boolean;
+  otpExpiresAt?: Date | string | null;
+}): boolean {
+  if (req.status.toUpperCase() !== "PENDING_OTP") return false;
+  if (req.otpVerified) return false;
+  if (!req.otpExpiresAt) return false;
+  return new Date(req.otpExpiresAt).getTime() < Date.now();
+}
+
+/**
+ * User-facing status for a loan request row: surfaces EXPIRED for lapsed,
+ * unverified OTP requests; otherwise returns the raw stored status.
+ */
+export function deriveLoanRequestDisplayStatus(req: {
+  status: string;
+  otpVerified?: boolean;
+  otpExpiresAt?: Date | string | null;
+}): string {
+  return isLoanRequestExpired(req) ? "EXPIRED" : req.status;
+}
 
 export function derivePurposeDisplayStatus(
   input: PurposeStatusInput,
@@ -48,6 +78,12 @@ export function derivePurposeDisplayStatus(
   }
 
   const reqStatus = loanRequest.status.toUpperCase();
+
+  // A lapsed OTP request is no longer active; for an approved farmer the
+  // product line becomes requestable again.
+  if (reqStatus === "PENDING_OTP" && isLoanRequestExpired(loanRequest)) {
+    return "Not Requested";
+  }
 
   switch (reqStatus) {
     case "PENDING_OTP":

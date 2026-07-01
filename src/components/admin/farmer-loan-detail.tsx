@@ -155,6 +155,15 @@ export interface FarmerDetailData {
       repaidAmount: number;
       productName: string | null;
     } | null;
+    insurancePayment: {
+      id: string;
+      status: string;
+      insuranceName: string | null;
+      transactionId: string | null;
+      remainingBalance: number | null;
+      requestedAt: string;
+      confirmedAt: string | null;
+    } | null;
   }[];
   loanRequests: {
     id: string;
@@ -189,6 +198,65 @@ export function FarmerLoanDetail({
   backHref = '/admin/farmer-loans',
   headerActions,
 }: FarmerLoanDetailProps) {
+  // The Loan Requests table lists both loan requests and insurance payments.
+  // Insurance is funded via a LershaInsurancePayment (no loan request / OTP),
+  // so normalise both into a common row shape and sort newest-first.
+  type RequestRow = {
+    key: string;
+    kind: 'loan' | 'insurance';
+    displayStatus: string;
+    productId: string;
+    reference: string | null;
+    otpVerified: boolean | null;
+    remainingBalance: number | null;
+    disbursedAt: string | null;
+    requestedAt: string;
+  };
+
+  const insuranceStatusLabel = (status: string): string => {
+    switch (status.toUpperCase()) {
+      case 'SUCCESS':
+        return 'DISBURSED';
+      case 'REQUESTED':
+        return 'PENDING';
+      default:
+        return status.toUpperCase();
+    }
+  };
+
+  const requestRows: RequestRow[] = [
+    ...farmer.loanRequests.map((req) => ({
+      key: `req-${req.id}`,
+      kind: 'loan' as const,
+      displayStatus: req.displayStatus,
+      productId: req.productId,
+      reference: req.referenceNo,
+      otpVerified: req.otpVerified,
+      remainingBalance: req.remainingBalance,
+      disbursedAt: req.disbursementConfirmedAt,
+      requestedAt: req.createdAt,
+    })),
+    ...farmer.loanPurposes
+      .filter((lp) => lp.insurancePayment)
+      .map((lp) => {
+        const p = lp.insurancePayment!;
+        return {
+          key: `ins-${p.id}`,
+          kind: 'insurance' as const,
+          displayStatus: insuranceStatusLabel(p.status),
+          productId: lp.productId ?? '—',
+          reference: p.transactionId,
+          otpVerified: null,
+          remainingBalance: p.remainingBalance,
+          disbursedAt: p.confirmedAt,
+          requestedAt: p.requestedAt,
+        };
+      }),
+  ].sort(
+    (a, b) =>
+      new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime(),
+  );
+
   return (
     <div className="flex-1 space-y-6 p-8 pt-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -423,7 +491,9 @@ export function FarmerLoanDetail({
                     {lp.agroDealerAccountNo ?? '—'}
                   </TableCell>
                   <TableCell className="font-mono text-xs">
-                    {lp.loanRequest?.referenceNo ?? '—'}
+                    {lp.loanRequest?.referenceNo ??
+                      lp.insurancePayment?.transactionId ??
+                      '—'}
                   </TableCell>
                 </TableRow>
               ))}
@@ -446,12 +516,12 @@ export function FarmerLoanDetail({
         </CardContent>
       </Card>
 
-      {farmer.loanRequests.length > 0 && (
+      {requestRows.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Loan Requests</CardTitle>
             <CardDescription>
-              All loan requests submitted for this farmer
+              All loan and insurance requests submitted for this farmer
             </CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
@@ -459,6 +529,7 @@ export function FarmerLoanDetail({
               <TableHeader>
                 <TableRow>
                   <TableHead>Status</TableHead>
+                  <TableHead>Type</TableHead>
                   <TableHead>Product ID</TableHead>
                   <TableHead>Reference</TableHead>
                   <TableHead>OTP Verified</TableHead>
@@ -468,33 +539,39 @@ export function FarmerLoanDetail({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {farmer.loanRequests.map((req) => (
-                  <TableRow key={req.id}>
+                {requestRows.map((row) => (
+                  <TableRow key={row.key}>
                     <TableCell>
-                      <Badge variant={farmerStatusVariant(req.displayStatus)}>
-                        {req.displayStatus.replace(/_/g, ' ')}
+                      <Badge variant={farmerStatusVariant(row.displayStatus)}>
+                        {row.displayStatus.replace(/_/g, ' ')}
                       </Badge>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {req.productId}
+                    <TableCell>
+                      {row.kind === 'insurance' ? 'Insurance' : 'Loan'}
                     </TableCell>
                     <TableCell className="font-mono text-xs">
-                      {req.referenceNo ?? '—'}
+                      {row.productId}
                     </TableCell>
-                    <TableCell>{req.otpVerified ? 'Yes' : 'No'}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {row.reference ?? '—'}
+                    </TableCell>
+                    <TableCell>
+                      {row.otpVerified == null
+                        ? 'N/A'
+                        : row.otpVerified
+                          ? 'Yes'
+                          : 'No'}
+                    </TableCell>
                     <TableCell className="text-right font-mono">
-                      {req.remainingBalance != null
-                        ? formatCurrency(req.remainingBalance)
+                      {row.remainingBalance != null
+                        ? formatCurrency(row.remainingBalance)
                         : '—'}
                     </TableCell>
                     <TableCell>
-                      {formatDateSafe(
-                        req.disbursementConfirmedAt,
-                        'yyyy-MM-dd HH:mm',
-                      )}
+                      {formatDateSafe(row.disbursedAt, 'yyyy-MM-dd HH:mm')}
                     </TableCell>
                     <TableCell>
-                      {formatDateSafe(req.createdAt, 'yyyy-MM-dd HH:mm')}
+                      {formatDateSafe(row.requestedAt, 'yyyy-MM-dd HH:mm')}
                     </TableCell>
                   </TableRow>
                 ))}

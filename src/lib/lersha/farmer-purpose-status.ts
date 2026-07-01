@@ -26,6 +26,13 @@ export type PurposeStatusInput = {
     repaymentStatus: string;
     loanAmount: number;
   } | null;
+  /**
+   * Insurance purposes are funded via a LershaInsurancePayment rather than a
+   * LershaLoanRequest, so their status is derived from the payment when present.
+   */
+  insurancePayment?: {
+    status: string; // REQUESTED | SUCCESS | FAILED | REJECTED
+  } | null;
 };
 
 /**
@@ -59,7 +66,8 @@ export function deriveLoanRequestDisplayStatus(req: {
 export function derivePurposeDisplayStatus(
   input: PurposeStatusInput,
 ): PurposeDisplayStatus {
-  const { farmerStatus, productId, loanRequest, linkedLoan } = input;
+  const { farmerStatus, productId, loanRequest, linkedLoan, insurancePayment } =
+    input;
 
   if (!productId) {
     return "N/A";
@@ -68,6 +76,30 @@ export function derivePurposeDisplayStatus(
   const farmerUpper = farmerStatus.toUpperCase();
   if (farmerUpper === "REJECTED" || farmerUpper === "DECLINED") {
     return "Declined";
+  }
+
+  // Insurance purposes are booked through an insurance payment (which creates a
+  // Loan on approval), never a loan request, so derive their status from it.
+  if (insurancePayment) {
+    switch (insurancePayment.status.toUpperCase()) {
+      case "SUCCESS": {
+        if (linkedLoan) {
+          const rs = linkedLoan.repaymentStatus.toUpperCase();
+          if (rs === "PAID" || rs === "REVERSED" || rs === "CANCELLED") {
+            return "Closed";
+          }
+          return "Active";
+        }
+        return "Disbursed";
+      }
+      case "REQUESTED":
+        return "Pending";
+      case "FAILED":
+      case "REJECTED":
+        return "Declined";
+      default:
+        return "Pending";
+    }
   }
 
   if (!loanRequest) {

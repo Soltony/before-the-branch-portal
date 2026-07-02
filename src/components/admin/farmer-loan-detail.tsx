@@ -19,12 +19,18 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, ArrowLeft } from 'lucide-react';
+import { ExternalLink, ArrowLeft, PencilLine } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import {
   purposeStatusBadgeVariant,
   type PurposeDisplayStatus,
 } from '@/lib/lersha/farmer-purpose-status';
 import { farmerStatusLabel } from '@/lib/lersha/farmer-status';
+import type {
+  DiffValueKind,
+  FieldChange,
+  PendingUpdateDiff,
+} from '@/lib/lersha/farmer-update-diff';
 
 export const formatCurrency = (amount: number) =>
   new Intl.NumberFormat('en-US', {
@@ -52,19 +58,93 @@ export const farmerStatusVariant = (
   }
 };
 
+/** Renders a diffed value with kind-aware formatting. */
+function DiffValue({
+  value,
+  kind,
+  tone = 'current',
+}: {
+  value: string | number | null;
+  kind: DiffValueKind;
+  tone?: 'previous' | 'current';
+}) {
+  const toneClass =
+    tone === 'previous'
+      ? 'text-muted-foreground line-through decoration-muted-foreground/50'
+      : 'font-medium';
+  if (value == null || value === '') {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  switch (kind) {
+    case 'currency':
+      return (
+        <span className={cn('font-mono', toneClass)}>
+          {formatCurrency(Number(value))}
+        </span>
+      );
+    case 'date':
+      return (
+        <span className={toneClass}>
+          {formatDateSafe(String(value), 'yyyy-MM-dd')}
+        </span>
+      );
+    case 'url':
+      // Keep replaced documents clickable so reviewers can compare them.
+      return (
+        <a
+          href={String(value)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn(
+            'inline-flex items-center gap-1 hover:underline',
+            tone === 'previous' ? 'text-muted-foreground' : 'text-primary font-medium',
+          )}
+        >
+          View document
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      );
+    case 'number':
+      return <span className={cn('font-mono', toneClass)}>{String(value)}</span>;
+    default:
+      return <span className={toneClass}>{String(value)}</span>;
+  }
+}
+
 function DetailField({
   label,
   value,
   className,
+  change,
 }: {
   label: string;
   value: React.ReactNode;
   className?: string;
+  /** When set, the field is part of a pending update and gets highlighted. */
+  change?: FieldChange;
 }) {
   return (
-    <div className={className}>
-      <dt className="text-xs text-muted-foreground mb-0.5">{label}</dt>
+    <div
+      className={cn(
+        className,
+        change &&
+          'rounded-md bg-amber-50 ring-1 ring-inset ring-amber-300 -mx-2 -my-1.5 px-2 py-1.5 dark:bg-amber-950/40 dark:ring-amber-800',
+      )}
+    >
+      <dt className="text-xs text-muted-foreground mb-0.5 flex items-center gap-1.5">
+        {label}
+        {change && (
+          <span className="rounded-sm bg-amber-200/80 px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-amber-900 dark:bg-amber-900 dark:text-amber-200">
+            Updated
+          </span>
+        )}
+      </dt>
       <dd className="text-sm break-words">{value ?? '—'}</dd>
+      {change && (
+        <dd className="mt-1 text-xs text-muted-foreground break-words">
+          Was: <DiffValue value={change.previous} kind={change.kind} tone="previous" />
+        </dd>
+      )}
     </div>
   );
 }
@@ -122,9 +202,12 @@ export interface FarmerDetailData {
   updatedAt: string;
   purposesTotal: number;
   isUpdated?: boolean;
+  /** Diff of the unreviewed Lersha update, if one is awaiting approval. */
+  pendingUpdate?: PendingUpdateDiff | null;
   loanPurposes: {
     id: string;
     productId: string | null;
+    changeKind?: 'added' | 'modified' | null;
     loanPurpose: string;
     specificVarietyName: string | null;
     quantity: number | null;
@@ -198,6 +281,21 @@ export function FarmerLoanDetail({
   backHref = '/admin/farmer-loans',
   headerActions,
 }: FarmerLoanDetailProps) {
+  // Pending-update review support: quick lookup of changed profile fields so
+  // each detail field can highlight itself and show the previous value.
+  const pendingUpdate = farmer.pendingUpdate?.hasChanges
+    ? farmer.pendingUpdate
+    : null;
+  const changedFields = new Map(
+    (pendingUpdate?.fields ?? []).map((c) => [c.field, c]),
+  );
+  const purposeChangeCount = pendingUpdate
+    ? pendingUpdate.purposes.added.length +
+      pendingUpdate.purposes.removed.length +
+      pendingUpdate.purposes.modified.length
+    : 0;
+  const totalChangeCount = (pendingUpdate?.fields.length ?? 0) + purposeChangeCount;
+
   // The Loan Requests table lists both loan requests and insurance payments.
   // Insurance is funded via a LershaInsurancePayment (no loan request / OTP),
   // so normalise both into a common row shape and sort newest-first.
@@ -271,6 +369,14 @@ export function FarmerLoanDetail({
             <h2 className="text-3xl font-bold tracking-tight">
               {farmer.farmerName}
             </h2>
+            {changedFields.has('farmerName') && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Name updated — was{' '}
+                <span className="line-through">
+                  {changedFields.get('farmerName')!.previous}
+                </span>
+              </p>
+            )}
             <p className="text-muted-foreground font-mono text-sm">
               Farmer ID: {farmer.farmerId}
             </p>
@@ -284,9 +390,21 @@ export function FarmerLoanDetail({
                 Loan processing blocked until re-approved
               </Badge>
             )}
-            {farmer.isUpdated && farmer.status !== 'PENDING_UPDATE' && (
-              <Badge variant="outline">Profile updated from Lersha</Badge>
+            {pendingUpdate && (
+              <Badge
+                variant="outline"
+                className="border-amber-500 text-amber-700"
+              >
+                <PencilLine className="mr-1 h-3 w-3" />
+                Update pending review · {totalChangeCount}{' '}
+                {totalChangeCount === 1 ? 'change' : 'changes'}
+              </Badge>
             )}
+            {!pendingUpdate &&
+              farmer.isUpdated &&
+              farmer.status !== 'PENDING_UPDATE' && (
+                <Badge variant="outline">Profile updated from Lersha</Badge>
+              )}
             <span className="text-xs text-muted-foreground">
               Registered {formatDateSafe(farmer.createdAt, 'yyyy-MM-dd HH:mm')}
             </span>
@@ -298,11 +416,140 @@ export function FarmerLoanDetail({
         {headerActions}
       </div>
 
-      {farmer.status === 'PENDING_UPDATE' && (
+      {(farmer.status === 'PENDING_UPDATE' || pendingUpdate) && (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
-          This farmer&apos;s profile was updated from Lersha. Approve or reject the
-          update before they can request loans, confirm OTP, or receive disbursements.
+          This farmer&apos;s profile was updated from Lersha.{' '}
+          {pendingUpdate
+            ? 'The changed fields are listed and highlighted below. Approve or reject the update'
+            : 'Approve or reject the update'}{' '}
+          before they can request loans, confirm OTP, or receive disbursements.
         </div>
+      )}
+
+      {pendingUpdate && (
+        <Card className="border-amber-300 dark:border-amber-800">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <PencilLine className="h-5 w-5 text-amber-600" />
+              What Changed in This Update ({totalChangeCount})
+            </CardTitle>
+            <CardDescription>
+              Compared against the record as it was before the update
+              {pendingUpdate.baselineCapturedAt
+                ? ` (received ${formatDateSafe(
+                    pendingUpdate.baselineCapturedAt,
+                    'yyyy-MM-dd HH:mm',
+                  )})`
+                : ''}
+              . Approving accepts the new values shown on this page.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {pendingUpdate.fields.length > 0 && (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Field</TableHead>
+                      <TableHead>Previous Value</TableHead>
+                      <TableHead>Updated Value</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pendingUpdate.fields.map((change) => (
+                      <TableRow key={change.field}>
+                        <TableCell className="font-medium">
+                          {change.label}
+                        </TableCell>
+                        <TableCell>
+                          <DiffValue
+                            value={change.previous}
+                            kind={change.kind}
+                            tone="previous"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <DiffValue value={change.current} kind={change.kind} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+
+            {purposeChangeCount > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">
+                  Loan Purposes ({purposeChangeCount}{' '}
+                  {purposeChangeCount === 1 ? 'change' : 'changes'})
+                </p>
+                <ul className="space-y-2">
+                  {pendingUpdate.purposes.added.map((p) => (
+                    <li
+                      key={`added-${p.matchKey}`}
+                      className="flex flex-wrap items-center gap-2 text-sm"
+                    >
+                      <Badge className="bg-emerald-600 hover:bg-emerald-600">
+                        Added
+                      </Badge>
+                      <span>{p.label}</span>
+                      <span className="font-mono font-semibold">
+                        {formatCurrency(p.totalCost)}
+                      </span>
+                    </li>
+                  ))}
+                  {pendingUpdate.purposes.removed.map((p) => (
+                    <li
+                      key={`removed-${p.matchKey}`}
+                      className="flex flex-wrap items-center gap-2 text-sm"
+                    >
+                      <Badge variant="destructive">Removed</Badge>
+                      <span className="line-through text-muted-foreground">
+                        {p.label}
+                      </span>
+                      <span className="font-mono text-muted-foreground line-through">
+                        {formatCurrency(p.totalCost)}
+                      </span>
+                    </li>
+                  ))}
+                  {pendingUpdate.purposes.modified.map((p) => (
+                    <li key={`modified-${p.matchKey}`} className="text-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500 text-amber-700"
+                        >
+                          Changed
+                        </Badge>
+                        <span>{p.label}</span>
+                        <span className="font-mono font-semibold">
+                          {formatCurrency(p.totalCost)}
+                        </span>
+                      </div>
+                      {p.changes && p.changes.length > 0 && (
+                        <ul className="mt-1 ml-6 space-y-0.5 text-xs text-muted-foreground">
+                          {p.changes.map((c) => (
+                            <li key={c.field}>
+                              {c.label}:{' '}
+                              <DiffValue
+                                value={c.previous}
+                                kind={c.kind}
+                                tone="previous"
+                              />{' '}
+                              →{' '}
+                              <DiffValue value={c.current} kind={c.kind} />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -312,21 +559,32 @@ export function FarmerLoanDetail({
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <DetailField label="Phone Number" value={farmer.phoneNumber} />
-              <DetailField label="Address" value={farmer.address} />
+              <DetailField
+                label="Phone Number"
+                value={farmer.phoneNumber}
+                change={changedFields.get('phoneNumber')}
+              />
+              <DetailField
+                label="Address"
+                value={farmer.address}
+                change={changedFields.get('address')}
+              />
               <DetailField
                 label="Application Channel"
                 value={farmer.applicationChannel}
+                change={changedFields.get('applicationChannel')}
               />
               <DetailField
                 label="Credit Score"
                 value={
                   <span className="font-mono">{farmer.creditScoreValue}</span>
                 }
+                change={changedFields.get('creditScoreValue')}
               />
               <DetailField
                 label="Score Calculation Date"
                 value={formatDateSafe(farmer.scoreCalculationDate, 'yyyy-MM-dd')}
+                change={changedFields.get('scoreCalculationDate')}
               />
               <DetailField
                 label="Marriage Certificate"
@@ -336,6 +594,7 @@ export function FarmerLoanDetail({
                     label="View document"
                   />
                 }
+                change={changedFields.get('marriageCertificateUrl')}
               />
             </dl>
           </CardContent>
@@ -347,26 +606,35 @@ export function FarmerLoanDetail({
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <DetailField label="Primary Crop" value={farmer.primaryCropType} />
+              <DetailField
+                label="Primary Crop"
+                value={farmer.primaryCropType}
+                change={changedFields.get('primaryCropType')}
+              />
               <DetailField
                 label="Farm Registry Number"
                 value={farmer.farmRegistryNumber}
+                change={changedFields.get('farmRegistryNumber')}
               />
               <DetailField
                 label="Total Farm Size"
                 value={`${farmer.totalFarmSizeInHectare} ha`}
+                change={changedFields.get('totalFarmSizeInHectare')}
               />
               <DetailField
                 label="Cultivated Area"
                 value={`${farmer.cultivatedAreaInHectare} ha`}
+                change={changedFields.get('cultivatedAreaInHectare')}
               />
               <DetailField
                 label="Requested Loan Term"
                 value={`${farmer.requestedLoanTermInMonth} months`}
+                change={changedFields.get('requestedLoanTermInMonth')}
               />
               <DetailField
                 label="Repayment Source"
                 value={farmer.repaymentSource}
+                change={changedFields.get('repaymentSource')}
               />
               <DetailField
                 label="Requested Loan Amount"
@@ -376,6 +644,7 @@ export function FarmerLoanDetail({
                   </span>
                 }
                 className="sm:col-span-2"
+                change={changedFields.get('requestedLoanAmount')}
               />
             </dl>
           </CardContent>
@@ -387,16 +656,26 @@ export function FarmerLoanDetail({
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <DetailField label="Name" value={farmer.emergencyContactName} />
-              <DetailField label="Phone" value={farmer.emergencyContactPhone} />
+              <DetailField
+                label="Name"
+                value={farmer.emergencyContactName}
+                change={changedFields.get('emergencyContactName')}
+              />
+              <DetailField
+                label="Phone"
+                value={farmer.emergencyContactPhone}
+                change={changedFields.get('emergencyContactPhone')}
+              />
               <DetailField
                 label="Relationship"
                 value={farmer.emergencyContactRelationship}
+                change={changedFields.get('emergencyContactRelationship')}
               />
               <DetailField
                 label="Address"
                 value={farmer.emergencyContactAddress}
                 className="sm:col-span-2"
+                change={changedFields.get('emergencyContactAddress')}
               />
             </dl>
           </CardContent>
@@ -416,6 +695,7 @@ export function FarmerLoanDetail({
                 value={
                   <DocLink url={farmer.kebeleIdDocUrl} label="View Kebele ID" />
                 }
+                change={changedFields.get('kebeleIdDocUrl')}
               />
               <DetailField
                 label="Land Certificate"
@@ -425,6 +705,7 @@ export function FarmerLoanDetail({
                     label="View land certificate"
                   />
                 }
+                change={changedFields.get('landCertificateDocUrl')}
               />
             </dl>
           </CardContent>
@@ -458,11 +739,36 @@ export function FarmerLoanDetail({
             </TableHeader>
             <TableBody>
               {farmer.loanPurposes.map((lp) => (
-                <TableRow key={lp.id}>
+                <TableRow
+                  key={lp.id}
+                  className={cn(
+                    lp.changeKind && 'bg-amber-50/60 dark:bg-amber-950/20',
+                  )}
+                >
                   <TableCell>
-                    <Badge variant={purposeStatusBadgeVariant(lp.displayStatus)}>
-                      {lp.displayStatus}
-                    </Badge>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <Badge
+                        variant={purposeStatusBadgeVariant(lp.displayStatus)}
+                      >
+                        {lp.displayStatus}
+                      </Badge>
+                      {lp.changeKind === 'added' && (
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-500 text-emerald-700"
+                        >
+                          New
+                        </Badge>
+                      )}
+                      {lp.changeKind === 'modified' && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500 text-amber-700"
+                        >
+                          Updated
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="font-medium">{lp.loanPurpose}</TableCell>
                   <TableCell className="font-mono text-xs max-w-[120px] truncate">

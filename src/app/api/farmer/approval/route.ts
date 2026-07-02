@@ -71,11 +71,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Update farmer status
+    // Update farmer status. The review baseline (pre-update snapshot used to
+    // show reviewers what changed) is consumed by this decision, so clear it.
     const updated = await prisma.lershaFarmer.update({
       where: { farmerId: farmer_id },
       data: {
         status: decision,
+        reviewBaseline: null,
       },
     });
 

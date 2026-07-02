@@ -5,6 +5,10 @@ import {
   deriveLoanRequestDisplayStatus,
   type PurposeDisplayStatus,
 } from "@/lib/lersha/farmer-purpose-status";
+import {
+  computePendingUpdate,
+  loanPurposeMatchKey,
+} from "@/lib/lersha/farmer-update-diff";
 
 type RouteParams = { params: Promise<{ farmerId: string }> };
 
@@ -86,6 +90,20 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
       }
     }
 
+    // Pending review diff: what changed since the pre-update snapshot. Null
+    // unless an unreviewed Lersha update is awaiting an approve/reject.
+    const pendingUpdate = computePendingUpdate(
+      farmer.reviewBaseline,
+      farmer,
+      farmer.loanPurposes,
+    );
+    const addedPurposeKeys = new Set(
+      pendingUpdate?.purposes.added.map((p) => p.matchKey) ?? [],
+    );
+    const modifiedPurposeKeys = new Set(
+      pendingUpdate?.purposes.modified.map((p) => p.matchKey) ?? [],
+    );
+
     const loanPurposesWithStatus = farmer.loanPurposes.map((purpose) => {
       const insurancePayment = paymentByPurpose.get(purpose.id) ?? null;
 
@@ -138,8 +156,15 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
           : null,
       });
 
+      const purposeKey = loanPurposeMatchKey(purpose);
+
       return {
         ...purpose,
+        changeKind: addedPurposeKeys.has(purposeKey)
+          ? ("added" as const)
+          : modifiedPurposeKeys.has(purposeKey)
+            ? ("modified" as const)
+            : null,
         displayStatus,
         loanRequest: loanRequest
           ? {
@@ -230,6 +255,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
         })),
         purposesTotal,
         isUpdated,
+        pendingUpdate,
         borrowerLoans: borrowerLoans.map((loan) => ({
           id: loan.id,
           loanAmount: loan.loanAmount,

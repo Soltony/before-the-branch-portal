@@ -847,6 +847,10 @@ model LershaFarmer {
   status                       String              @default("PENDING")
   marriageCertificateUrl       String?             @db.NVarChar(Max)
   address                      String              @db.NVarChar(Max)
+  // JSON snapshot (profile + loan purposes) captured before the first
+  // unreviewed Lersha update is applied, so reviewers see exactly which
+  // fields changed. Cleared when a reviewer approves or rejects the farmer.
+  reviewBaseline               String?             @db.NVarChar(Max)
   createdAt                    DateTime            @default(now())
   updatedAt                    DateTime            @updatedAt
   loanPurposes                 LershaLoanPurpose[]

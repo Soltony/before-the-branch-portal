@@ -17,23 +17,20 @@ export function isFarmerPendingApproval(status: string): boolean {
 }
 
 /**
- * After Lersha re-sends Send Farmer Details for an existing farmerId:
- * - Still awaiting first approval → stay PENDING
- * - Rejected resubmission → PENDING
- * - Previously approved (or any other decided state) → PENDING_UPDATE (re-approval required)
+ * Whether Send Farmer Details may modify this farmer's record. Only farmers
+ * still awaiting first approval — or resubmitting after a rejection — can be
+ * updated; once a farmer has been approved the record is locked and updates
+ * from Lersha are rejected outright. (PENDING_UPDATE is a legacy state from
+ * when post-approval updates were accepted; those farmers were approved, so
+ * they are locked too until a reviewer decides on the pending update.)
  */
-export function resolveStatusOnUpdate(existingStatus: string): string {
-  const current = existingStatus.toUpperCase();
-
-  if (current === FARMER_PENDING_STATUS) {
-    return FARMER_PENDING_STATUS;
-  }
-
-  if (current === "REJECTED" || current === "DECLINED") {
-    return FARMER_PENDING_STATUS;
-  }
-
-  return FARMER_PENDING_UPDATE_STATUS;
+export function canAcceptProfileUpdate(status: string): boolean {
+  const normalized = status.toUpperCase();
+  return (
+    normalized === FARMER_PENDING_STATUS ||
+    normalized === "REJECTED" ||
+    normalized === "DECLINED"
+  );
 }
 
 export function farmerStatusLabel(status: string): string {

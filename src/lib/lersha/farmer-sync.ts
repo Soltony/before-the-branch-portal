@@ -1,30 +1,11 @@
 import prisma from "@/lib/prisma";
 import { randomUUID } from "crypto";
 import type { SendFarmerDetailInput } from "@/lib/lersha/types";
-import { resolveStatusOnUpdate } from "@/lib/lersha/farmer-status";
+import { loanPurposeMatchKey } from "@/lib/lersha/farmer-update-diff";
 
 export type LoanPurposePayload = SendFarmerDetailInput["loanPurposes"][number];
 
-export function loanPurposeMatchKey(purpose: {
-  loanPurpose: string;
-  specificVarietyName?: string | null;
-  totalCost: number;
-  insuranceName?: string | null;
-}): string {
-  const loanPurpose = purpose.loanPurpose.trim().toLowerCase();
-  if (loanPurpose === "insurance") {
-    return [
-      "insurance",
-      (purpose.insuranceName ?? "").trim().toLowerCase(),
-      purpose.totalCost.toFixed(2),
-    ].join("::");
-  }
-  return [
-    loanPurpose,
-    (purpose.specificVarietyName ?? "").trim().toLowerCase(),
-    purpose.totalCost.toFixed(2),
-  ].join("::");
-}
+export { loanPurposeMatchKey };
 
 function purposeMatchKeyFromRecord(purpose: {
   loanPurpose: string;

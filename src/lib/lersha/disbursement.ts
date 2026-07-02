@@ -11,6 +11,19 @@ import { areDisbursementsEnabled } from "@/lib/disbursement-control";
 import { processExternalDisbursement } from "@/lib/external-disbursement";
 
 /**
+ * Sentinel thrown when a concurrent caller has already claimed this loan
+ * request for disbursement. Used to make disbursement idempotent and prevent a
+ * race between /api/farmer/OtpConfirmation and /api/farmer/disbursement from
+ * creating two loans / two CBS transfers for the same request.
+ */
+class ConcurrentDisbursementError extends Error {
+  constructor() {
+    super("Loan request is already being disbursed");
+    this.name = "ConcurrentDisbursementError";
+  }
+}
+
+/**
  * Auto-disbursement for farmer loans after OTP verification.
  * Mirrors the standard personal-loan disbursement in /api/loans (handlePersonalLoan).
  */
@@ -89,6 +102,20 @@ export async function autoDisburseFarmerLoan(
         success: false,
         message: `Cannot disburse loan with status: ${loanRequest.status}`,
         error: "INVALID_LOAN_STATUS",
+      };
+    }
+
+    // Respect the global disbursement kill-switch, mirroring the personal-loan
+    // route (/api/loans). When disbursements are disabled we must NOT create the
+    // loan, post ledgers, decrement provider funds, or notify Lersha as
+    // DISBURSED. The request stays OTP_VERIFIED and can be disbursed later once
+    // disbursements are re-enabled (e.g. via /api/farmer/disbursement).
+    const disbursementsEnabled = await areDisbursementsEnabled();
+    if (!disbursementsEnabled) {
+      return {
+        success: false,
+        message: "Disbursements are currently disabled.",
+        error: "DISBURSEMENTS_DISABLED",
       };
     }
 
@@ -214,6 +241,21 @@ export async function autoDisburseFarmerLoan(
 
     const { loan, journalEntryId, remainingBalance } =
       await prisma.$transaction(async (tx) => {
+        // Atomically claim this loan request as the first statement in the
+        // transaction. The UPDATE takes an exclusive row lock; a racing caller
+        // blocks here, then re-evaluates the WHERE after we commit, matches 0
+        // rows, and aborts — guaranteeing a single loan and a single CBS
+        // transfer even if OtpConfirmation and /api/farmer/disbursement run
+        // concurrently. If this transaction rolls back, the claim is undone and
+        // the request becomes disbursable again.
+        const claimed = await tx.lershaLoanRequest.updateMany({
+          where: { id: lershaLoanRequestId, status: "OTP_VERIFIED" },
+          data: { status: "DISBURSED" },
+        });
+        if (claimed.count === 0) {
+          throw new ConcurrentDisbursementError();
+        }
+
         const loanApplication = await tx.loanApplication.create({
           data: {
             borrowerId,
@@ -510,6 +552,25 @@ export async function autoDisburseFarmerLoan(
       externalDisbursementOk,
     };
   } catch (error: any) {
+    if (error instanceof ConcurrentDisbursementError) {
+      // A concurrent caller already claimed this request. If it has finished,
+      // report success idempotently; otherwise report that it is in progress.
+      const current = await prisma.lershaLoanRequest.findUnique({
+        where: { id: lershaLoanRequestId },
+      });
+      if (current?.status === "DISBURSED") {
+        return {
+          success: true,
+          message: "Loan already disbursed",
+          remainingBalance: current.remainingBalance ?? undefined,
+        };
+      }
+      return {
+        success: false,
+        message: "Disbursement is already in progress for this loan request.",
+        error: "DISBURSEMENT_IN_PROGRESS",
+      };
+    }
     console.error("[autoDisburseFarmerLoan] Error:", error);
     return {
       success: false,

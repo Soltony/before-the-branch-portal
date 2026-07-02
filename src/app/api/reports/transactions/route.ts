@@ -434,6 +434,21 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Farmer (Lersha) loans use the farmer's Lersha farmerId as the loan's
+    // borrowerId and have no PhoneAccount / provisionedData record. Resolve their
+    // display name from the farmerName captured during farmer registration so the
+    // report shows the farmer's name instead of falling back to the account number.
+    const farmerNameMap = new Map<string, string>();
+    if (borrowerIds.length > 0) {
+      const farmers = await prisma.lershaFarmer.findMany({
+        where: { farmerId: { in: borrowerIds } },
+        select: { farmerId: true, farmerName: true },
+      });
+      for (const f of farmers) {
+        if (f.farmerName) farmerNameMap.set(f.farmerId, f.farmerName.trim());
+      }
+    }
+
     const providerIds = Array.from(
       new Set(journalEntries.map((j) => j.providerId).filter(Boolean))
     ) as string[];
@@ -698,6 +713,10 @@ export async function GET(request: NextRequest) {
               ? phoneAccountMap.get(loan.borrowerId)
               : null;
           if (pa) customerName = pa.customerName || null;
+          if (!customerName && loan?.borrowerId) {
+            // Farmer loans: name comes from Lersha farmer registration (farmerName)
+            customerName = farmerNameMap.get(loan.borrowerId) || null;
+          }
           if (!customerName) {
             const pd = loan?.borrower?.provisionedData?.[0]?.data;
             if (pd) {

@@ -10,12 +10,17 @@ import { getPriceChangeThresholdPercent } from "@/lib/price-change-control";
  *
  * Lersha prices products at the woreda level, so a single price change affects
  * every farmer in that woreda. This endpoint accepts the full batch of affected
- * (farmerId, productId) pairs with the proposed new unit price, and validates
- * ALL of them against the bank's configured tolerance (default ±10%, see
- * PriceChangeControl) BEFORE applying anything. Agro-dealer changes are handled
- * separately via /api/v1/nib/agroDealerChange.
+ * (farmerId, productId) pairs with the proposed new unit price.
  *
- * If the change breaches the threshold for even one farmer — or any
+ * The tolerance (default ±10%, see PriceChangeControl) is enforced at the LOAN
+ * level, not per product: an individual product's price may move by any amount,
+ * as long as the NET ETB change across a farmer's whole loan stays within
+ * requestedLoanAmount × thresholdPercent (positive and negative product changes
+ * offset each other, each measured against the product's original price). A
+ * product whose loan is already disbursed stays locked. Agro-dealer changes are
+ * handled separately via /api/v1/nib/agroDealerChange.
+ *
+ * If the loan-level threshold is breached for even one farmer — or any
  * farmer/product can't be resolved — the entire batch is rejected (HTTP 422)
  * and nothing is written, preserving woreda-level consistency between Lersha
  * and the bank. A fully valid batch is applied atomically in one transaction.
@@ -103,15 +108,45 @@ export async function POST(req: NextRequest) {
         .filter((id): id is string => Boolean(id)),
     );
 
+    // The threshold is enforced at the LOAN level, not per product: individual
+    // product prices may move by any amount, as long as the NET change across a
+    // farmer's whole loan stays within requestedLoanAmount × thresholdPercent.
+    // We need every purpose of each affected farmer (not just the ones in this
+    // batch) to size the loan and to account for products changed previously.
+    const farmerExternalIds = Array.from(
+      new Set(changes.map((c) => c.farmerId)),
+    );
+    const farmersForLoan = await prisma.lershaFarmer.findMany({
+      where: { farmerId: { in: farmerExternalIds } },
+      select: {
+        farmerId: true,
+        requestedLoanAmount: true,
+        loanPurposes: {
+          select: {
+            productId: true,
+            quantity: true,
+            unitPrice: true,
+            originalUnitPrice: true,
+          },
+        },
+      },
+    });
+    const farmerByExternalId = new Map(
+      farmersForLoan.map((f) => [f.farmerId, f]),
+    );
+
     type Violation = {
       farmerId: string;
-      productId: string;
+      productId?: string;
       reason: string;
       oldUnitPrice?: number | null;
       originalUnitPrice?: number | null;
       newUnitPrice?: number;
-      changePercent?: number;
       allowedPercent?: number;
+      // Loan-level (EXCEEDS_LOAN_THRESHOLD) context:
+      loanAmount?: number;
+      totalVariance?: number;
+      allowedVariance?: number;
     };
     type PlannedUpdate = {
       id: string;
@@ -161,13 +196,12 @@ export async function POST(req: NextRequest) {
       }
 
       const oldUnitPrice = purpose.unitPrice;
-      // Task 3: the tolerance is measured against the ORIGINAL registered price,
-      // not the last changed value, so repeated small changes can't drift the
-      // price past the threshold. Fall back to the current price for any legacy
-      // row whose baseline wasn't captured/backfilled.
+      // The loan-level variance is measured against the ORIGINAL registered
+      // price (not the last changed value), so repeated changes can't drift the
+      // loan past the threshold. A baseline is required to score the change;
+      // fall back to the current price for any legacy row not yet backfilled.
       const baselineUnitPrice = purpose.originalUnitPrice ?? oldUnitPrice;
       if (baselineUnitPrice == null || baselineUnitPrice <= 0) {
-        // No baseline price → can't validate a percentage change.
         violations.push({
           farmerId: change.farmerId,
           productId: change.productId,
@@ -179,24 +213,8 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      const changePercent =
-        (Math.abs(change.newUnitPrice - baselineUnitPrice) / baselineUnitPrice) *
-        100;
-      // Small epsilon so an exact ±threshold change isn't rejected by rounding.
-      if (changePercent > thresholdPercent + 1e-9) {
-        violations.push({
-          farmerId: change.farmerId,
-          productId: change.productId,
-          reason: "EXCEEDS_THRESHOLD",
-          oldUnitPrice,
-          originalUnitPrice: baselineUnitPrice,
-          newUnitPrice: change.newUnitPrice,
-          changePercent: Number(changePercent.toFixed(4)),
-          allowedPercent: thresholdPercent,
-        });
-        continue;
-      }
-
+      // Individual products may move by any amount — the ±threshold is enforced
+      // per loan below, not here.
       // Keep totalCost consistent with the new unit price when quantity is known.
       const newTotalCost =
         purpose.quantity != null ? change.newUnitPrice * purpose.quantity : null;
@@ -209,6 +227,49 @@ export async function POST(req: NextRequest) {
         newUnitPrice: change.newUnitPrice,
         newTotalCost,
       });
+    }
+
+    // ---- Loan-level (global) threshold check, per farmer. ----
+    // For each affected farmer, the NET ETB change across their whole loan
+    // (proposed prices for products in this batch, current prices for the rest,
+    // each measured against the product's original price) must stay within
+    // requestedLoanAmount × thresholdPercent. Positive and negative product
+    // changes offset each other.
+    const proposedByProductId = new Map(
+      planned.map((p) => [p.productId, p.newUnitPrice]),
+    );
+    for (const externalId of farmerExternalIds) {
+      const farmer = farmerByExternalId.get(externalId);
+      // Missing farmer / product-ownership problems are already reported as
+      // per-item violations above; nothing to size here.
+      if (!farmer) continue;
+      const loanAmount = farmer.requestedLoanAmount;
+      if (loanAmount == null || loanAmount <= 0) continue;
+
+      let netVariance = 0;
+      for (const lp of farmer.loanPurposes) {
+        const baseUnit = lp.originalUnitPrice ?? lp.unitPrice;
+        if (baseUnit == null) continue;
+        const proposed = lp.productId
+          ? proposedByProductId.get(lp.productId)
+          : undefined;
+        const effectiveUnit = proposed ?? lp.unitPrice ?? baseUnit;
+        const qty = lp.quantity ?? 1;
+        netVariance += (effectiveUnit - baseUnit) * qty;
+      }
+
+      const allowedVariance = (loanAmount * thresholdPercent) / 100;
+      // Small epsilon so an exact ±threshold change isn't rejected by rounding.
+      if (Math.abs(netVariance) > allowedVariance + 1e-6) {
+        violations.push({
+          farmerId: externalId,
+          reason: "EXCEEDS_LOAN_THRESHOLD",
+          loanAmount,
+          totalVariance: Number(netVariance.toFixed(2)),
+          allowedVariance: Number(allowedVariance.toFixed(2)),
+          allowedPercent: thresholdPercent,
+        });
+      }
     }
 
     // ---- All-or-nothing: any violation rejects the entire batch. ----

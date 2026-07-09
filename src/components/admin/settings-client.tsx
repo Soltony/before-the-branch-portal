@@ -3065,10 +3065,12 @@ function PriceChangeTab() {
             <CardHeader>
                 <CardTitle>Price Change Control</CardTitle>
                 <CardDescription>
-                    Maximum tolerance for a Lersha product price change. A change is rejected
-                    when it moves a product&apos;s unit price by more than this percentage away
-                    from its <span className="font-medium">original registered price</span>.
-                    Products are also locked once their loan has been disbursed.
+                    Tolerance for Lersha price changes, applied at the{' '}
+                    <span className="font-medium">whole-loan</span> level. Individual product
+                    prices may move by any amount, as long as the net change across a farmer&apos;s
+                    loan stays within this percentage of their requested loan amount (e.g. 10% of
+                    a 50,000 ETB loan = 5,000 ETB max variance). Products are also locked once
+                    their loan has been disbursed.
                 </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -3096,7 +3098,7 @@ function PriceChangeTab() {
                                 <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">%</span>
                             </div>
                             <p className="mt-1 text-xs text-muted-foreground">
-                                e.g. 10 allows up to ±10% from the original price.
+                                e.g. 10 allows the loan&apos;s total to vary by up to ±10%.
                             </p>
                         </div>
                         {updatedAt && (

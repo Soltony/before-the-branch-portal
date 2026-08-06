@@ -68,6 +68,7 @@ import {
   farmerStatusLabel,
 } from '@/lib/lersha/farmer-status';
 import { deriveLoanRequestDisplayStatus } from '@/lib/lersha/farmer-purpose-status';
+import { FarmerAccountPicker } from '@/components/admin/farmer-account-picker';
 
 // ── Types ──────────────────────────────────────────
 
@@ -202,6 +203,9 @@ export default function FarmerLoansPage() {
   } | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [selectedReason, setSelectedReason] = useState('');
+  // Borrower's own account, chosen at approval from the accounts registered
+  // against the farmer's phone number; credited on every disbursement.
+  const [approveAccountNo, setApproveAccountNo] = useState<string | null>(null);
 
   const rejectionReasons = [
     'Incorrect User Information',
@@ -289,6 +293,15 @@ export default function FarmerLoansPage() {
       return;
     }
 
+    if (decision === 'APPROVED' && !approveAccountNo) {
+      toast({
+        title: 'Error',
+        description: "Select the farmer's account to credit before approving.",
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const response = await fetch('/api/farmer/approval', {
@@ -298,6 +311,8 @@ export default function FarmerLoansPage() {
           farmer_id: farmer.farmerId,
           decision,
           rejectionReason: rejectionReason || undefined,
+          disbursementAccountNo:
+            decision === 'APPROVED' ? approveAccountNo : undefined,
         }),
       });
 
@@ -324,6 +339,7 @@ export default function FarmerLoansPage() {
     } finally {
       setIsSubmitting(false);
       setActionState(null);
+      setApproveAccountNo(null);
     }
   };
 
@@ -587,7 +603,12 @@ export default function FarmerLoansPage() {
 
       <AlertDialog
         open={actionState?.type === 'approveRegistration' && !!actionState.farmer}
-        onOpenChange={(open) => !open && setActionState(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActionState(null);
+            setApproveAccountNo(null);
+          }
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -598,11 +619,18 @@ export default function FarmerLoansPage() {
               . Once approved, this farmer can proceed to request a loan.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {actionState?.farmer && (
+            <FarmerAccountPicker
+              farmerId={actionState.farmer.id}
+              value={approveAccountNo}
+              onChange={setApproveAccountNo}
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => handleFarmerApproval('APPROVED')}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !approveAccountNo}
             >
               {isSubmitting && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

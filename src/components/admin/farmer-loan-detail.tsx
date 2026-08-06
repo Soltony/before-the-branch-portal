@@ -198,6 +198,10 @@ export interface FarmerDetailData {
   status: string;
   marriageCertificateUrl: string | null;
   address: string;
+  /** Borrower's own account, credited for loans and insurance alike. */
+  disbursementAccountNo: string | null;
+  disbursementAccountName: string | null;
+  disbursementAccountSelectedAt: string | null;
   createdAt: string;
   updatedAt: string;
   purposesTotal: number;
@@ -596,6 +600,33 @@ export function FarmerLoanDetail({
                 }
                 change={changedFields.get('marriageCertificateUrl')}
               />
+              <DetailField
+                label="Disbursement Account"
+                className="sm:col-span-2"
+                value={
+                  farmer.disbursementAccountNo ? (
+                    <span className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-mono font-semibold">
+                        {farmer.disbursementAccountNo}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {farmer.disbursementAccountName ?? '—'}
+                        {farmer.disbursementAccountSelectedAt
+                          ? ` · selected ${formatDateSafe(
+                              farmer.disbursementAccountSelectedAt,
+                              'yyyy-MM-dd HH:mm',
+                            )}`
+                          : ''}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="text-amber-700 dark:text-amber-400">
+                      Not selected — disbursements are blocked until an account is
+                      chosen
+                    </span>
+                  )
+                }
+              />
             </dl>
           </CardContent>
         </Card>
@@ -718,7 +749,9 @@ export function FarmerLoanDetail({
             Loan Purposes ({farmer.loanPurposes.length})
           </CardTitle>
           <CardDescription>
-            Line items from registration with current status per purpose
+            Line items from registration with current status per purpose. The
+            agro dealer / insurer details are informational — disbursements are
+            credited to the farmer&apos;s own account shown above.
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">

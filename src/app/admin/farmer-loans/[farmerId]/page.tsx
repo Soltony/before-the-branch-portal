@@ -34,12 +34,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Landmark } from 'lucide-react';
 import { isFarmerPendingApproval } from '@/lib/lersha/farmer-status';
 import {
   FarmerLoanDetail,
   type FarmerDetailData,
 } from '@/components/admin/farmer-loan-detail';
+import { FarmerAccountPicker } from '@/components/admin/farmer-account-picker';
 
 export default function FarmerLoanDetailPage() {
   useRequirePermission('farmer-loans');
@@ -58,6 +59,11 @@ export default function FarmerLoanDetailPage() {
   const [rejectOpen, setRejectOpen] = useState(false);
   const [selectedReason, setSelectedReason] = useState('');
   const [rejectReason, setRejectReason] = useState('');
+  // Borrower's own account, chosen from the accounts registered against the
+  // farmer's phone number; credited on every disbursement for this farmer.
+  const [approveAccountNo, setApproveAccountNo] = useState<string | null>(null);
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
+  const [accountDialogValue, setAccountDialogValue] = useState<string | null>(null);
 
   const rejectionReasons = [
     'Incorrect User Information',
@@ -110,6 +116,15 @@ export default function FarmerLoanDetailPage() {
       return;
     }
 
+    if (decision === 'APPROVED' && !approveAccountNo) {
+      toast({
+        title: 'Error',
+        description: "Select the farmer's account to credit before approving.",
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const response = await fetch('/api/farmer/approval', {
@@ -119,6 +134,8 @@ export default function FarmerLoanDetailPage() {
           farmer_id: farmer.farmerId,
           decision,
           rejectionReason: rejectionReason || undefined,
+          disbursementAccountNo:
+            decision === 'APPROVED' ? approveAccountNo : undefined,
         }),
       });
 
@@ -137,6 +154,46 @@ export default function FarmerLoanDetailPage() {
       setRejectOpen(false);
       setSelectedReason('');
       setRejectReason('');
+      setApproveAccountNo(null);
+      await fetchFarmer();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  /**
+   * Set or change the account credited on disbursement, outside the approval
+   * flow — needed for farmers approved before account selection existed, and to
+   * correct a wrong pick before any money moves.
+   */
+  const handleSaveAccount = async () => {
+    if (!farmer || !accountDialogValue) return;
+
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(
+        `/api/farmer-loans/${encodeURIComponent(farmer.id)}/accounts`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountNumber: accountDialogValue }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to save account.');
+
+      toast({
+        title: 'Disbursement Account Saved',
+        description: `${accountDialogValue} will be credited for ${farmer.farmerName}.`,
+      });
+      setAccountDialogOpen(false);
+      setAccountDialogValue(null);
       await fetchFarmer();
     } catch (error: any) {
       toast({
@@ -168,28 +225,46 @@ export default function FarmerLoanDetailPage() {
     );
   }
 
-  const headerActions =
-    canDecide && isFarmerPendingApproval(farmer.status) ? (
-      <div className="flex gap-2">
+  const headerActions = canDecide ? (
+    <div className="flex flex-wrap gap-2">
+      {isFarmerPendingApproval(farmer.status) ? (
+        <>
+          <Button
+            className="gap-1"
+            onClick={() => setApproveOpen(true)}
+            disabled={isSubmitting}
+          >
+            <CheckCircle className="h-4 w-4" />
+            Approve Registration
+          </Button>
+          <Button
+            variant="destructive"
+            className="gap-1"
+            onClick={() => setRejectOpen(true)}
+            disabled={isSubmitting}
+          >
+            <XCircle className="h-4 w-4" />
+            Reject Registration
+          </Button>
+        </>
+      ) : (
         <Button
+          variant="outline"
           className="gap-1"
-          onClick={() => setApproveOpen(true)}
+          onClick={() => {
+            setAccountDialogValue(farmer.disbursementAccountNo ?? null);
+            setAccountDialogOpen(true);
+          }}
           disabled={isSubmitting}
         >
-          <CheckCircle className="h-4 w-4" />
-          Approve Registration
+          <Landmark className="h-4 w-4" />
+          {farmer.disbursementAccountNo
+            ? 'Change Disbursement Account'
+            : 'Set Disbursement Account'}
         </Button>
-        <Button
-          variant="destructive"
-          className="gap-1"
-          onClick={() => setRejectOpen(true)}
-          disabled={isSubmitting}
-        >
-          <XCircle className="h-4 w-4" />
-          Reject Registration
-        </Button>
-      </div>
-    ) : null;
+      )}
+    </div>
+  ) : null;
 
   return (
     <>
@@ -199,7 +274,13 @@ export default function FarmerLoanDetailPage() {
         headerActions={headerActions}
       />
 
-      <AlertDialog open={approveOpen} onOpenChange={setApproveOpen}>
+      <AlertDialog
+        open={approveOpen}
+        onOpenChange={(open) => {
+          setApproveOpen(open);
+          if (!open) setApproveAccountNo(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Approve Farmer Registration?</AlertDialogTitle>
@@ -208,11 +289,16 @@ export default function FarmerLoanDetailPage() {
               Once approved, this farmer can request loans for their purposes.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <FarmerAccountPicker
+            farmerId={farmer.id}
+            value={approveAccountNo}
+            onChange={setApproveAccountNo}
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => handleFarmerApproval('APPROVED')}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !approveAccountNo}
             >
               {isSubmitting && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -222,6 +308,44 @@ export default function FarmerLoanDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={accountDialogOpen}
+        onOpenChange={(open) => {
+          setAccountDialogOpen(open);
+          if (!open) setAccountDialogValue(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Disbursement Account</DialogTitle>
+            <DialogDescription>
+              Choose the account credited when {farmer.farmerName} is disbursed —
+              for the agri-input loan and for insurance payments alike.
+            </DialogDescription>
+          </DialogHeader>
+          <FarmerAccountPicker
+            farmerId={farmer.id}
+            value={accountDialogValue}
+            onChange={setAccountDialogValue}
+            label="Select account"
+          />
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button
+              onClick={handleSaveAccount}
+              disabled={isSubmitting || !accountDialogValue}
+            >
+              {isSubmitting && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              Save Account
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={rejectOpen}

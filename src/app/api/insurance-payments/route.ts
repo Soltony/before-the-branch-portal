@@ -89,6 +89,8 @@ export async function GET(req: NextRequest) {
                 phoneNumber: true,
                 requestedLoanAmount: true,
                 status: true,
+                disbursementAccountNo: true,
+                disbursementAccountName: true,
               },
             },
             insuranceAccount: {
@@ -99,38 +101,13 @@ export async function GET(req: NextRequest) {
         })
       : [];
 
-    // Rows requested before their insurer was mapped have a null account
-    // snapshot. Approval re-resolves the mapping by insurer name, so surface the
-    // currently-active account here too — otherwise the UI would block them.
-    const unresolvedNames = Array.from(
-      new Set(
-        payments
-          .filter((p) => !p.creditAccount && p.insuranceName)
-          .map((p) => p.insuranceName as string),
-      ),
-    );
-    if (unresolvedNames.length > 0) {
-      const activeAccounts = await prisma.insuranceAccount.findMany({
-        where: { insuranceName: { in: unresolvedNames }, status: "ACTIVE" },
-      });
-      const byName = new Map(
-        activeAccounts.map((a) => [a.insuranceName.trim().toLowerCase(), a]),
-      );
-      for (const p of payments) {
-        if (!p.creditAccount && p.insuranceName) {
-          const acc = byName.get(p.insuranceName.trim().toLowerCase());
-          if (acc) {
-            p.creditAccount = acc.accountNumber;
-            p.insuranceId = acc.insuranceId;
-            (p as any).insuranceAccount = {
-              id: acc.id,
-              insuranceName: acc.insuranceName,
-              insuranceId: acc.insuranceId,
-              accountNumber: acc.accountNumber,
-              status: acc.status,
-            };
-          }
-        }
+    // The credited account is the farmer's own. Rows recorded before their
+    // farmer had one selected carry a null snapshot; approval reads the farmer's
+    // current account, so surface that here too — otherwise the UI would block
+    // payments that are in fact approvable.
+    for (const p of payments) {
+      if (!p.creditAccount && p.farmer?.disbursementAccountNo) {
+        p.creditAccount = p.farmer.disbursementAccountNo;
       }
     }
 

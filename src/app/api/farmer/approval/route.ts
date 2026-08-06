@@ -5,6 +5,7 @@ import { sendLoanDecision } from "@/lib/lersha/client";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { isFarmerPendingApproval } from "@/lib/lersha/farmer-status";
+import { verifyFarmerAccountSelection } from "@/lib/lersha/farmer-accounts";
 
 /**
  * Admin approval endpoint for farmers.
@@ -17,6 +18,10 @@ const approvalSchema = z.object({
     errorMap: () => ({ message: "decision must be APPROVED or REJECTED" }),
   }),
   rejectionReason: z.string().optional(),
+  // The borrower's own account to credit on every disbursement for this farmer.
+  // Required on approval: Lersha sends no account at registration, so the
+  // approver picks one of the accounts held against the farmer's phone number.
+  disbursementAccountNo: z.string().min(1).optional(),
 });
 
 type ApprovalInput = z.infer<typeof approvalSchema>;
@@ -36,11 +41,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { farmer_id, decision, rejectionReason } = parsed.data;
+    const { farmer_id, decision, rejectionReason, disbursementAccountNo } =
+      parsed.data;
     console.log("[farmer/approval] Parsed input:", {
       farmer_id,
       decision,
       hasRejectionReason: Boolean(rejectionReason),
+      hasDisbursementAccount: Boolean(disbursementAccountNo),
     });
 
     // Find the farmer
@@ -71,6 +78,45 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // On approval the reviewer must nominate the borrower's own account — every
+    // disbursement for this farmer (agri-input loan and insurance) is credited
+    // to it. Re-verify the number against the accounts the banking service holds
+    // for the farmer's phone so an arbitrary account can never be posted here.
+    let selectedAccount: { accountNumber: string; accountName: string | null } | null =
+      null;
+    if (decision === "APPROVED") {
+      const accountNo =
+        disbursementAccountNo?.trim() || farmer.disbursementAccountNo?.trim() || "";
+      if (!accountNo) {
+        console.warn("[farmer/approval] Approval without a credit account:", {
+          farmer_id,
+        });
+        return NextResponse.json(
+          {
+            error:
+              "Select the farmer's bank account to credit before approving. Accounts are listed from the farmer's phone number.",
+          },
+          { status: 400 },
+        );
+      }
+
+      const verified = await verifyFarmerAccountSelection(
+        farmer.phoneNumber,
+        accountNo,
+      );
+      if (!verified.ok) {
+        console.warn("[farmer/approval] Account verification failed:", {
+          farmer_id,
+          error: verified.error,
+        });
+        return NextResponse.json(
+          { error: verified.error },
+          { status: verified.status },
+        );
+      }
+      selectedAccount = verified.account;
+    }
+
     // Update farmer status. The review baseline (pre-update snapshot used to
     // show reviewers what changed) is consumed by this decision, so clear it.
     const updated = await prisma.lershaFarmer.update({
@@ -78,6 +124,13 @@ export async function POST(req: NextRequest) {
       data: {
         status: decision,
         reviewBaseline: null,
+        ...(selectedAccount
+          ? {
+              disbursementAccountNo: selectedAccount.accountNumber,
+              disbursementAccountName: selectedAccount.accountName,
+              disbursementAccountSelectedAt: new Date(),
+            }
+          : {}),
       },
     });
 
@@ -116,6 +169,8 @@ export async function POST(req: NextRequest) {
         decision,
         rejectionReason: rejectionReason || null,
         referenceNo,
+        disbursementAccountNo: selectedAccount?.accountNumber ?? null,
+        disbursementAccountName: selectedAccount?.accountName ?? null,
         lershaNotified: lershaResponse.ok,
         lershaStatus: lershaResponse.status,
       },
@@ -128,6 +183,8 @@ export async function POST(req: NextRequest) {
       status: updated.status,
       rejectionReason: rejectionReason || null,
       referenceNo,
+      disbursementAccountNo: updated.disbursementAccountNo,
+      disbursementAccountName: updated.disbursementAccountName,
       lershaNotified: lershaResponse.ok,
     };
     console.log("[farmer/approval] Returning response:", response);

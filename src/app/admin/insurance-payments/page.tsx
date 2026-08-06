@@ -74,7 +74,9 @@ import {
   Eye,
   Users,
   RefreshCw,
+  Landmark,
 } from 'lucide-react';
+import { FarmerAccountPicker } from '@/components/admin/farmer-account-picker';
 
 // ── Types ──────────────────────────────────────────
 
@@ -101,6 +103,9 @@ interface InsurancePayment {
     phoneNumber: string;
     requestedLoanAmount: number;
     status: string;
+    /** Borrower's own account — the one credited on approval. */
+    disbursementAccountNo: string | null;
+    disbursementAccountName: string | null;
   } | null;
   insuranceAccount: {
     id: string;
@@ -155,8 +160,12 @@ const statusVariant = (
   }
 };
 
+/** The account credited on approval: the farmer's own, not the insurer's. */
+const creditAccountOf = (p: InsurancePayment) =>
+  p.farmer?.disbursementAccountNo ?? p.creditAccount ?? null;
+
 const isApprovable = (p: InsurancePayment) =>
-  p.status === 'REQUESTED' && !!p.creditAccount;
+  p.status === 'REQUESTED' && !!creditAccountOf(p);
 
 const ITEMS_PER_PAGE = 20;
 
@@ -187,6 +196,10 @@ export default function InsurancePaymentsPage() {
   const [rejectTarget, setRejectTarget] = useState<string[] | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [detailPayment, setDetailPayment] = useState<InsurancePayment | null>(null);
+  // Farmers approved before account selection existed have no account on file;
+  // the approver picks one here so the payment can be credited to the borrower.
+  const [accountTarget, setAccountTarget] = useState<InsurancePayment | null>(null);
+  const [accountValue, setAccountValue] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -305,6 +318,35 @@ export default function InsurancePaymentsPage() {
     }
   };
 
+  const saveFarmerAccount = async () => {
+    const farmerId = accountTarget?.farmer?.id;
+    if (!farmerId || !accountValue) return;
+    setIsSubmitting(true);
+    try {
+      const res = await fetch(
+        `/api/farmer-loans/${encodeURIComponent(farmerId)}/accounts`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountNumber: accountValue }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to save account.');
+      toast({
+        title: 'Disbursement Account Saved',
+        description: `${accountValue} will be credited for ${accountTarget?.farmer?.farmerName}.`,
+      });
+      setAccountTarget(null);
+      setAccountValue(null);
+      fetchBatches();
+    } catch (error: any) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const hasActiveFilters = debouncedSearch || statusFilter;
 
   return (
@@ -314,7 +356,9 @@ export default function InsurancePaymentsPage() {
         <p className="text-muted-foreground">
           Each request from Lersha (a batch of farmers) is grouped below. Open a batch to
           review every farmer&apos;s insurance request and approve or reject — individually
-          or all at once. Manage per-insurer account mappings in the Insurance Accounts tab.
+          or all at once. Approving credits the farmer&apos;s own account, selected from the
+          accounts held against their phone number. Manage per-insurer NIB mappings in the
+          Insurance Accounts tab.
         </p>
       </div>
 
@@ -435,6 +479,10 @@ export default function InsurancePaymentsPage() {
                       onApprove={(ids) => setApproveTarget(ids)}
                       onReject={(ids) => setRejectTarget(ids)}
                       onViewDetails={(p) => setDetailPayment(p)}
+                      onSelectAccount={(p) => {
+                        setAccountTarget(p);
+                        setAccountValue(p.farmer?.disbursementAccountNo ?? null);
+                      }}
                     />
                   ))}
                 </Accordion>
@@ -484,8 +532,8 @@ export default function InsurancePaymentsPage() {
             <AlertDialogTitle>Approve insurance payment(s)?</AlertDialogTitle>
             <AlertDialogDescription>
               {approveTarget?.length === 1
-                ? 'This payment will be booked as a loan and the insurer account will be credited.'
-                : `${approveTarget?.length} payments will be booked as loans and their insurer accounts credited.`}{' '}
+                ? "This payment will be booked as a loan and the farmer's own account will be credited."
+                : `${approveTarget?.length} payments will be booked as loans and each farmer's own account credited.`}{' '}
               Lersha will be notified of the result.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -545,6 +593,48 @@ export default function InsurancePaymentsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Farmer disbursement account */}
+      <Dialog
+        open={!!accountTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAccountTarget(null);
+            setAccountValue(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Farmer Account to Credit</DialogTitle>
+            <DialogDescription>
+              Choose the account credited when {accountTarget?.farmer?.farmerName}
+              &apos;s insurance is approved. This is the farmer&apos;s own account
+              and is used for their agri-input loan too.
+            </DialogDescription>
+          </DialogHeader>
+          {accountTarget?.farmer && (
+            <FarmerAccountPicker
+              farmerId={accountTarget.farmer.id}
+              value={accountValue}
+              onChange={setAccountValue}
+              label="Select account"
+            />
+          )}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button
+              onClick={saveFarmerAccount}
+              disabled={isSubmitting || !accountValue}
+            >
+              {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Account
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Per-payment details */}
       <PaymentDetailsDialog
         payment={detailPayment}
@@ -566,6 +656,7 @@ function BatchRow({
   onApprove,
   onReject,
   onViewDetails,
+  onSelectAccount,
 }: {
   batch: Batch;
   canApprove: boolean;
@@ -576,6 +667,7 @@ function BatchRow({
   onApprove: (ids: string[]) => void;
   onReject: (ids: string[]) => void;
   onViewDetails: (p: InsurancePayment) => void;
+  onSelectAccount: (p: InsurancePayment) => void;
 }) {
   const approvableIds = useMemo(
     () => batch.payments.filter(isApprovable).map((p) => p.id),
@@ -657,7 +749,7 @@ function BatchRow({
                 {canApprove && <TableHead className="w-[40px]" />}
                 <TableHead>Farmer</TableHead>
                 <TableHead>Insurer</TableHead>
-                <TableHead>Account</TableHead>
+                <TableHead>Farmer Account (credited)</TableHead>
                 <TableHead className="text-right">Amount</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Remaining</TableHead>
@@ -666,7 +758,8 @@ function BatchRow({
             </TableHeader>
             <TableBody>
               {batch.payments.map((p) => {
-                const unmapped = !p.creditAccount;
+                const creditAccount = creditAccountOf(p);
+                const unmapped = !creditAccount;
                 const requested = p.status === 'REQUESTED';
                 return (
                   <TableRow key={p.id}>
@@ -688,10 +781,17 @@ function BatchRow({
                     </TableCell>
                     <TableCell>{p.insuranceName ?? '—'}</TableCell>
                     <TableCell className="font-mono text-xs">
-                      {p.creditAccount ?? (
+                      {creditAccount ? (
+                        <>
+                          <div>{creditAccount}</div>
+                          <div className="font-sans text-[11px] text-muted-foreground">
+                            {p.farmer?.disbursementAccountName ?? '—'}
+                          </div>
+                        </>
+                      ) : (
                         <span className="inline-flex items-center gap-1 text-amber-600">
                           <AlertTriangle className="h-3 w-3" />
-                          Not configured
+                          Not selected
                         </span>
                       )}
                     </TableCell>
@@ -719,13 +819,31 @@ function BatchRow({
                         </Button>
                         {canApprove && requested && (
                           <>
+                            {p.farmer && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title={
+                                  unmapped
+                                    ? "Select the farmer's account to credit"
+                                    : "Change the farmer's account to credit"
+                                }
+                                disabled={isSubmitting}
+                                onClick={() => onSelectAccount(p)}
+                              >
+                                <Landmark
+                                  className={`h-4 w-4 ${unmapped ? 'text-amber-600' : ''}`}
+                                />
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-green-600 hover:text-green-700"
                               title={
                                 unmapped
-                                  ? 'Configure the insurer account first'
+                                  ? "Select the farmer's account to credit first"
                                   : 'Approve payment'
                               }
                               disabled={unmapped || isSubmitting}
@@ -800,10 +918,17 @@ function PaymentDetailsDialog({
             <DetailRow label="Insurer" value={payment.insuranceName} />
             <DetailRow label="Insurance ID" value={payment.insuranceId} />
             <DetailRow
-              label="Credit Account"
+              label="Farmer Account (credited)"
               value={
-                payment.creditAccount ?? (
-                  <span className="text-amber-600">Not configured</span>
+                creditAccountOf(payment) ? (
+                  <>
+                    <span className="font-mono">{creditAccountOf(payment)}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {payment.farmer?.disbursementAccountName ?? '—'}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-amber-600">Not selected</span>
                 )
               }
             />
@@ -999,7 +1124,9 @@ function InsuranceAccountsTab({ canManage }: { canManage: boolean }) {
           <CardDescription>
             Auto-fetched from approved farmers: the insurer name and account number
             come from each farmer&apos;s insurance loan purpose. Only the NIB insurance
-            ID and ACTIVE/INACTIVE status are editable here.
+            ID and ACTIVE/INACTIVE status are editable here. Approvals credit the
+            farmer&apos;s own account — the insurer account below is reference only,
+            and the NIB insurance ID is what is reported with the transfer.
           </CardDescription>
         </div>
         {canManage && (

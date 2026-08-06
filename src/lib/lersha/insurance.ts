@@ -161,32 +161,33 @@ export async function processInsurancePayment(
     }
 
     // Re-resolve the insurer account mapping in case it was configured after the
-    // request was received (or changed since).
+    // request was received (or changed since). The insurer mapping no longer
+    // supplies the credited account — only the NIB insurance id reported with
+    // the transfer — so a missing mapping is not fatal.
     let insuranceAccount = payment.insuranceAccount;
     if (!insuranceAccount && payment.insuranceName) {
       insuranceAccount = await prisma.insuranceAccount.findFirst({
         where: { insuranceName: payment.insuranceName, status: "ACTIVE" },
       });
     }
-    if (!insuranceAccount) {
-      return softError(
-        payment.id,
-        externalFarmerId,
-        `No active insurance account configured for "${payment.insuranceName ?? "this insurer"}". Configure it under Insurance Accounts before approving.`,
-      );
-    }
 
-    const creditAccount = insuranceAccount.accountNumber?.trim() || "";
+    // The borrower's own account is credited, not the insurer's. It is nominated
+    // by the approver at registration approval; without it there is nowhere to
+    // send the money, so leave the payment REQUESTED for the admin to fix.
+    const creditAccount = farmer.disbursementAccountNo?.trim() || "";
     if (!creditAccount) {
       return softError(
         payment.id,
         externalFarmerId,
-        "Configured insurance account has no account number.",
+        `No disbursement account selected for ${farmer.farmerName}. Set the farmer's account to credit before approving.`,
       );
     }
 
     const disbursementAmount = payment.insuranceAmount;
     const borrowerId = farmer.farmerId;
+    const insurerName =
+      payment.insuranceName ?? insuranceAccount?.insuranceName ?? "insurance";
+    const insurerNibId = insuranceAccount?.insuranceId ?? payment.insuranceId ?? null;
 
     const product = await resolveAgricultureProduct();
     if (!product) {
@@ -322,7 +323,7 @@ export async function processInsurancePayment(
             providerId: provider.id,
             loanId: createdLoan.id,
             date: disbursedDate,
-            description: `Insurance payment for ${farmer.farmerName} (Farm ID: ${farmer.farmerId}) — ${insuranceAccount!.insuranceName}`,
+            description: `Insurance payment for ${farmer.farmerName} (Farm ID: ${farmer.farmerId}) — ${insurerName}`,
           },
         });
 
@@ -425,25 +426,23 @@ export async function processInsurancePayment(
           );
         }
 
-        if (creditAccount) {
-          await tx.disbursementTransaction.create({
-            data: {
-              loanId: createdLoan.id,
-              providerId: forcedProviderId,
-              originalProviderId: provider.id,
+        await tx.disbursementTransaction.create({
+          data: {
+            loanId: createdLoan.id,
+            providerId: forcedProviderId,
+            originalProviderId: provider.id,
+            creditAccount,
+            amount: disbursementTransferAmount,
+            disbursementStatus: "PENDING",
+            requestPayload: JSON.stringify({
               creditAccount,
+              providerId: forcedProviderId,
               amount: disbursementTransferAmount,
-              disbursementStatus: "PENDING",
-              requestPayload: JSON.stringify({
-                creditAccount,
-                providerId: forcedProviderId,
-                amount: disbursementTransferAmount,
-                loanId: createdLoan.id,
-                insuranceId: insuranceAccount!.insuranceId,
-              }),
-            } as any,
-          });
-        }
+              loanId: createdLoan.id,
+              insuranceId: insurerNibId,
+            }),
+          } as any,
+        });
 
         // Remaining loan balance reported to Lersha = requested loan amount
         // minus everything already disbursed for this farmer (across loan
@@ -505,8 +504,8 @@ export async function processInsurancePayment(
             loanId: createdLoan.id,
             remainingBalance: balance,
             transactionAmount: disbursementTransferAmount,
-            insuranceAccountId: insuranceAccount!.id,
-            insuranceId: insuranceAccount!.insuranceId,
+            insuranceAccountId: insuranceAccount?.id ?? null,
+            insuranceId: insurerNibId,
             creditAccount,
             approvedByUserId: actorId,
             confirmedAt: new Date(),
@@ -527,7 +526,7 @@ export async function processInsurancePayment(
     let externalDisbursementOk = false;
     let upstreamTransactionId: string | null = null;
 
-    if (creditAccount) {
+    {
       const disbursementsEnabled = await areDisbursementsEnabled();
       if (disbursementsEnabled) {
         externalDisbursementAttempted = true;
@@ -578,8 +577,8 @@ export async function processInsurancePayment(
         farmerName: farmer.farmerName,
         borrowerId,
         loanId: loan.id,
-        insuranceName: insuranceAccount.insuranceName,
-        insuranceId: insuranceAccount.insuranceId,
+        insuranceName: insurerName,
+        insuranceId: insurerNibId,
         insuranceAmount: disbursementAmount,
         serviceFee: calculatedServiceFee,
         taxDeducted: inclusiveTaxAmount,
@@ -587,6 +586,7 @@ export async function processInsurancePayment(
         remainingBalance,
         journalEntryId,
         creditAccount,
+        creditAccountName: farmer.disbursementAccountName,
         transactionId,
         externalDisbursementAttempted,
         externalDisbursementOk,

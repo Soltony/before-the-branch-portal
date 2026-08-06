@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 /**
  * Guard-branch tests for processInsurancePayment. These exercise the early
  * returns that gate booking (idempotency, invalid status, rejected farmer,
- * unmapped insurer) without touching the DB transaction. The full happy-path
- * booking is covered by the end-to-end manual verification.
+ * missing farmer account) without touching the DB transaction. The full
+ * happy-path booking is covered by the end-to-end manual verification.
  */
 
 const mockFindUnique = vi.fn();
@@ -48,6 +48,9 @@ const activeFarmer = {
   status: "APPROVED",
   requestedLoanAmount: 10000,
   requestedLoanTermInMonth: 6,
+  // Borrower's own account, nominated by the approver at registration approval.
+  disbursementAccountNo: "1000123456789",
+  disbursementAccountName: "TEST FARMER",
 };
 
 beforeEach(() => {
@@ -105,7 +108,32 @@ describe("processInsurancePayment guards", () => {
     expect(r.error).toBe("FARMER_REJECTED");
   });
 
-  it("soft-errors when the insurer has no configured account", async () => {
+  it("soft-errors when the farmer has no disbursement account selected", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "p1",
+      status: "REQUESTED",
+      insuranceName: "NIB Insurance",
+      insuranceAmount: 1500,
+      farmer: { ...activeFarmer, disbursementAccountNo: null },
+      insuranceAccount: {
+        id: "acc1",
+        accountNumber: "999",
+        insuranceId: "INS1",
+        insuranceName: "NIB Insurance",
+      },
+    });
+
+    const r = await processInsurancePayment("p1", "actor-1");
+    expect(r.ok).toBe(false);
+    expect(r.softError).toBe(true);
+    expect(r.message).toMatch(/no disbursement account selected/i);
+    expect(r.confirmation).toBeUndefined();
+  });
+
+  // An unmapped insurer no longer blocks approval: the insurer mapping only
+  // supplies the NIB insurance id reported alongside the transfer, and the
+  // money goes to the farmer's own account either way.
+  it("does not block on an unmapped insurer when the farmer has an account", async () => {
     mockFindUnique.mockResolvedValue({
       id: "p1",
       status: "REQUESTED",
@@ -117,9 +145,7 @@ describe("processInsurancePayment guards", () => {
     mockAccountFindFirst.mockResolvedValue(null);
 
     const r = await processInsurancePayment("p1", "actor-1");
-    expect(r.ok).toBe(false);
-    expect(r.softError).toBe(true);
-    expect(r.message).toMatch(/no active insurance account/i);
-    expect(r.confirmation).toBeUndefined();
+    expect(r.message).not.toMatch(/no active insurance account/i);
+    expect(r.message).not.toMatch(/no disbursement account selected/i);
   });
 });

@@ -119,7 +119,9 @@ export async function POST(req: NextRequest) {
             insuranceName: purpose.insuranceName,
             insuranceAccountId: account?.id ?? null,
             insuranceId: account?.insuranceId ?? null,
-            creditAccount: account?.accountNumber ?? null,
+            // The farmer's own account is credited on approval; snapshot the one
+            // selected so far (null until a reviewer picks one at approval).
+            creditAccount: farmer.disbursementAccountNo ?? null,
             insuranceAmount: amount,
             status: "REQUESTED",
             requestPayload: JSON.stringify({

@@ -851,6 +851,14 @@ model LershaFarmer {
   // unreviewed Lersha update is applied, so reviewers see exactly which
   // fields changed. Cleared when a reviewer approves or rejects the farmer.
   reviewBaseline               String?             @db.NVarChar(Max)
+  // Borrower's own bank account, credited for every disbursement made to this
+  // farmer (agri-input loans and insurance). Lersha does not send an account at
+  // registration, so the approver picks one from the accounts the core banking
+  // system holds against `phoneNumber` when they approve the registration.
+  disbursementAccountNo        String?
+  disbursementAccountName      String?
+  disbursementAccountSelectedAt DateTime?
+  disbursementAccountSelectedBy String?
   createdAt                    DateTime            @default(now())
   updatedAt                    DateTime            @updatedAt
   loanPurposes                 LershaLoanPurpose[]
@@ -909,7 +917,7 @@ model InsuranceAccount {
   id            String                   @id @default(cuid())
   insuranceName String                   @unique // matches LershaLoanPurpose.insuranceName
   insuranceId   String // NIB insurance product id, e.g. INSURANCE001
-  accountNumber String // account credited when a payment is approved
+  accountNumber String // insurer's account from farmer registration (reference only — approvals credit the farmer's own account)
   status        String                   @default("ACTIVE") // ACTIVE | INACTIVE
   createdAt     DateTime                 @default(now())
   updatedAt     DateTime                 @updatedAt

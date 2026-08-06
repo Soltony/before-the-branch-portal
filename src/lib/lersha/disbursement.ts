@@ -135,7 +135,24 @@ export async function autoDisburseFarmerLoan(
     }
 
     const disbursementAmount = selectedLoanPurpose.totalCost;
-    const creditAccount = selectedLoanPurpose.agroDealerAccountNo?.trim() || "";
+
+    // The borrower's own account is credited, not the agro dealer's. It is
+    // nominated by the approver at registration approval (Lersha sends no
+    // account at registration), so without it there is nowhere to send the
+    // money — refuse before booking anything. The request stays OTP_VERIFIED and
+    // can be disbursed again via /api/farmer/disbursement once an account is set.
+    const creditAccount = farmer.disbursementAccountNo?.trim() || "";
+    if (!creditAccount) {
+      logger.error(
+        `[autoDisburseFarmerLoan] Farmer ${farmer.farmerId} has no disbursement account; refusing to book loan request ${lershaLoanRequestId}`,
+      );
+      return {
+        success: false,
+        message:
+          "No disbursement account selected for this farmer. Select the account to credit on the farmer's record before disbursing.",
+        error: "NO_FARMER_DISBURSEMENT_ACCOUNT",
+      };
+    }
 
     const product = await resolveAgricultureProduct();
     if (!product) {
@@ -387,24 +404,22 @@ export async function autoDisburseFarmerLoan(
           console.error("[autoDisburseFarmerLoan] Failed to create installments", e);
         }
 
-        if (creditAccount) {
-          await tx.disbursementTransaction.create({
-            data: {
-              loanId: createdLoan.id,
-              providerId: forcedProviderId,
-              originalProviderId: provider.id,
+        await tx.disbursementTransaction.create({
+          data: {
+            loanId: createdLoan.id,
+            providerId: forcedProviderId,
+            originalProviderId: provider.id,
+            creditAccount,
+            amount: disbursementTransferAmount,
+            disbursementStatus: "PENDING",
+            requestPayload: JSON.stringify({
               creditAccount,
+              providerId: forcedProviderId,
               amount: disbursementTransferAmount,
-              disbursementStatus: "PENDING",
-              requestPayload: JSON.stringify({
-                creditAccount,
-                providerId: forcedProviderId,
-                amount: disbursementTransferAmount,
-                loanId: createdLoan.id,
-              }),
-            } as any,
-          });
-        }
+              loanId: createdLoan.id,
+            }),
+          } as any,
+        });
 
         const previousDisbursedRequests = await tx.lershaLoanRequest.findMany({
           where: {
@@ -461,7 +476,7 @@ export async function autoDisburseFarmerLoan(
     let externalDisbursementAttempted = false;
     let externalDisbursementOk = false;
 
-    if (creditAccount) {
+    {
       const disbursementsEnabled = await areDisbursementsEnabled();
       if (disbursementsEnabled) {
         externalDisbursementAttempted = true;
@@ -483,10 +498,6 @@ export async function autoDisburseFarmerLoan(
           `[autoDisburseFarmerLoan] Disbursements disabled; loan ${loan.id} posted internally only`,
         );
       }
-    } else {
-      logger.warn(
-        `[autoDisburseFarmerLoan] No agro-dealer account for product ${loanRequest.productId}; skipping CBS transfer`,
-      );
     }
 
     let lershaNotified = false;
@@ -534,7 +545,8 @@ export async function autoDisburseFarmerLoan(
         journalEntryId,
         productId: loanRequest.productId,
         loanPurpose: selectedLoanPurpose.loanPurpose,
-        creditAccount: creditAccount || null,
+        creditAccount,
+        creditAccountName: farmer.disbursementAccountName,
         lershaNotified,
         externalDisbursementAttempted,
         externalDisbursementOk,

@@ -10,11 +10,30 @@ export type ExternalDisbursementInput = {
   creditAccount: string;
   providerId: string;
   amount: number;
+  /**
+   * Account of the agro dealer supplying the farmer's inputs. When present the
+   * core is also sent `agroDealersAmount` (the dealer's share of the transfer).
+   */
+  agroDealerAccount?: string | null;
   loanId?: string;
   actorId?: string;
   ipAddress?: string;
   userAgent?: string;
 };
+
+/**
+ * Portion deducted from the disbursed amount before it reaches the agro dealer.
+ * The real deduction rule is not confirmed yet, so for now it is a flat 1%.
+ */
+export const AGRO_DEALER_DEDUCTION_RATE = 0.01;
+
+/** Amount the core should move to the agro dealer: `amount` less 1%. */
+export function calculateAgroDealersAmount(amount: number): number {
+  return (
+    Math.round(amount * (1 - AGRO_DEALER_DEDUCTION_RATE) * 100 + Number.EPSILON) /
+    100
+  );
+}
 
 export type ExternalDisbursementResult = {
   ok: boolean;
@@ -99,6 +118,8 @@ export async function processExternalDisbursement(
     userAgent = "N/A",
   } = input;
 
+  const agroDealerAccount = input.agroDealerAccount?.trim() || null;
+
   let amount: number = input.amount;
   if (loanId) {
     try {
@@ -136,12 +157,22 @@ export async function processExternalDisbursement(
       ? "Basic " + Buffer.from(`${user}:${pass}`).toString("base64")
       : undefined;
 
-  const requestPayload = JSON.stringify({
+  // Exactly what the core receives. `agroDealerAccount`/`agroDealersAmount` are
+  // only sent when the loan has an agro dealer behind it (agri-input loans);
+  // other disbursements keep the original three-field payload.
+  const corePayload = {
     creditAccount,
+    ...(agroDealerAccount
+      ? {
+          agroDealerAccount,
+          agroDealersAmount: calculateAgroDealersAmount(amount),
+        }
+      : {}),
     providerId: sendProviderId,
     amount,
-    loanId,
-  });
+  };
+
+  const requestPayload = JSON.stringify({ ...corePayload, loanId });
 
   if (!apiUrl) {
     const errMsg = "Missing EXTERNAL_DISBURSEMENT_URL env var";
@@ -185,7 +216,7 @@ export async function processExternalDisbursement(
           "Content-Type": "application/json",
           ...(auth ? { Authorization: auth } : {}),
         },
-        body: { creditAccount, providerId: sendProviderId, amount },
+        body: corePayload,
       },
     ).catch(() => null);
 
@@ -195,11 +226,7 @@ export async function processExternalDisbursement(
         "Content-Type": "application/json",
         ...(auth ? { Authorization: auth } : {}),
       },
-      body: JSON.stringify({
-        creditAccount,
-        providerId: sendProviderId,
-        amount,
-      }),
+      body: JSON.stringify(corePayload),
     });
 
     const txt = await res.text().catch(() => null);
@@ -288,7 +315,7 @@ export async function processExternalDisbursement(
         request: {
           method: "POST",
           url: apiUrl,
-          body: { creditAccount, providerId: sendProviderId, amount },
+          body: corePayload,
         },
       },
     ).catch(() => null);

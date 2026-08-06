@@ -6,6 +6,7 @@ import { processExternalDisbursement } from "@/lib/external-disbursement";
 
 type Body = {
   creditAccount: string;
+  agroDealerAccount?: string;
   providerId: string;
   amount: string | number;
   loanId?: string;
@@ -26,7 +27,13 @@ export async function POST(req: Request) {
     }
 
     const body: Body = await req.json();
-    const { creditAccount, providerId, amount: clientAmount, loanId } = body;
+    const {
+      creditAccount,
+      agroDealerAccount,
+      providerId,
+      amount: clientAmount,
+      loanId,
+    } = body;
 
     if (!creditAccount || !providerId || !clientAmount) {
       return NextResponse.json(
@@ -68,6 +75,7 @@ export async function POST(req: Request) {
 
     const result = await processExternalDisbursement({
       creditAccount: String(creditAccount),
+      agroDealerAccount: agroDealerAccount ? String(agroDealerAccount) : null,
       providerId,
       amount,
       loanId,

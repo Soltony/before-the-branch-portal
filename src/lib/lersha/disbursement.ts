@@ -8,7 +8,10 @@ import {
 } from "@/lib/loan-calculator";
 import { addDays } from "date-fns";
 import { areDisbursementsEnabled } from "@/lib/disbursement-control";
-import { processExternalDisbursement } from "@/lib/external-disbursement";
+import {
+  calculateAgroDealersAmount,
+  processExternalDisbursement,
+} from "@/lib/external-disbursement";
 
 /**
  * Sentinel thrown when a concurrent caller has already claimed this loan
@@ -152,6 +155,16 @@ export async function autoDisburseFarmerLoan(
           "No disbursement account selected for this farmer. Select the account to credit on the farmer's record before disbursing.",
         error: "NO_FARMER_DISBURSEMENT_ACCOUNT",
       };
+    }
+
+    // The agro dealer supplying the inputs for this purpose. The core credits
+    // the farmer and moves the dealer's share (amount less 1%) to this account.
+    const agroDealerAccount =
+      selectedLoanPurpose.agroDealerAccountNo?.trim() || "";
+    if (!agroDealerAccount) {
+      logger.warn(
+        `[autoDisburseFarmerLoan] Loan purpose ${selectedLoanPurpose.id} has no agro dealer account; core will be called without agroDealerAccount/agroDealersAmount`,
+      );
     }
 
     const product = await resolveAgricultureProduct();
@@ -414,6 +427,14 @@ export async function autoDisburseFarmerLoan(
             disbursementStatus: "PENDING",
             requestPayload: JSON.stringify({
               creditAccount,
+              ...(agroDealerAccount
+                ? {
+                    agroDealerAccount,
+                    agroDealersAmount: calculateAgroDealersAmount(
+                      disbursementTransferAmount,
+                    ),
+                  }
+                : {}),
               providerId: forcedProviderId,
               amount: disbursementTransferAmount,
               loanId: createdLoan.id,
@@ -482,6 +503,7 @@ export async function autoDisburseFarmerLoan(
         externalDisbursementAttempted = true;
         const ext = await processExternalDisbursement({
           creditAccount,
+          agroDealerAccount,
           providerId: provider.id,
           amount: disbursementTransferAmount,
           loanId: loan.id,
@@ -547,6 +569,11 @@ export async function autoDisburseFarmerLoan(
         loanPurpose: selectedLoanPurpose.loanPurpose,
         creditAccount,
         creditAccountName: farmer.disbursementAccountName,
+        agroDealerAccount,
+        agroDealerName: selectedLoanPurpose.agroDealerName,
+        agroDealersAmount: agroDealerAccount
+          ? calculateAgroDealersAmount(disbursementTransferAmount)
+          : null,
         lershaNotified,
         externalDisbursementAttempted,
         externalDisbursementOk,

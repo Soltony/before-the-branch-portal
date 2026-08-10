@@ -4,6 +4,7 @@ import { loanRequestSchema } from "@/lib/lersha/types";
 import { createAuditLog } from "@/lib/audit-log";
 import { randomInt } from "crypto";
 import { isFarmerApprovedForProcessing } from "@/lib/lersha/farmer-status";
+import { areDisbursementsEnabled } from "@/lib/disbursement-control";
 import sendSms from "@/lib/sms";
 
 /** Generate a 6-character alphanumeric OTP */
@@ -35,6 +36,25 @@ export async function POST(req: NextRequest) {
 
     const { farmer_id, product_id } = parsed.data;
     console.log("[loanRequest] Parsed identifiers:", { farmer_id, product_id });
+
+    // The kill-switch is enforced here, at the front of the flow: a loan request
+    // exists to be disbursed, so if disbursements are off there is no point
+    // accepting it. Refusing up front means no LershaLoanRequest row, no OTP
+    // generated, and no OTP SMS — rather than putting the farmer through
+    // verification only to fail at the end and burn their code.
+    if (!(await areDisbursementsEnabled())) {
+      console.warn("[loanRequest] Disbursements disabled; refusing request:", {
+        farmer_id,
+        product_id,
+      });
+      return NextResponse.json(
+        {
+          error:
+            "Disbursements are currently unavailable. Please try this loan request again later.",
+        },
+        { status: 503 },
+      );
+    }
 
     // Verify farmer exists
     const farmer = await prisma.lershaFarmer.findUnique({

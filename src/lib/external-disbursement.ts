@@ -147,7 +147,7 @@ export async function processExternalDisbursement(
     }
   }
 
-  const forcedProviderId = process.env.FORCE_PROVIDER_ID ?? "PRO0001";
+  const forcedProviderId = process.env.FORCE_PROVIDER_ID;
   const sendProviderId = forcedProviderId;
   const apiUrl = process.env.EXTERNAL_DISBURSEMENT_URL;
   const user = process.env.EXTERNAL_API_USERNAME;

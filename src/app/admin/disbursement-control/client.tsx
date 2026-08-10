@@ -8,9 +8,14 @@ import { useToast } from '@/hooks/use-toast';
 
 export function DisbursementControlClient({
   initialEnabled,
+  unavailable = false,
+  unavailableReason,
   canUpdate,
 }: {
   initialEnabled: boolean;
+  /** True when `initialEnabled` is a fail-closed default because the stored flag could not be read. */
+  unavailable?: boolean;
+  unavailableReason?: string;
   canUpdate: boolean;
 }) {
   const { toast } = useToast();
@@ -77,6 +82,14 @@ export function DisbursementControlClient({
               <div className="text-sm text-muted-foreground">
                 {enabled ? 'Enabled' : 'Disabled'}{saving ? ' (saving...)' : ''}
               </div>
+              {unavailable ? (
+                <div className="text-sm font-medium text-destructive">
+                  Showing &ldquo;Disabled&rdquo; because the control flag could not
+                  be read — disbursements are being refused until it can be.
+                  This is not an operator setting.
+                  {unavailableReason ? ` (${unavailableReason})` : ''}
+                </div>
+              ) : null}
               {!canUpdate ? (
                 <div className="text-sm text-muted-foreground">
                   You have read-only access to this control.

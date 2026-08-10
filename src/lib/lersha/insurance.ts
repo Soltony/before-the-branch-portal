@@ -8,7 +8,10 @@ import {
   calculateInclusiveTax,
 } from "@/lib/loan-calculator";
 import { addDays } from "date-fns";
-import { areDisbursementsEnabled } from "@/lib/disbursement-control";
+import {
+  areDisbursementsEnabledWithin,
+  DisbursementsDisabledError,
+} from "@/lib/disbursement-control";
 import {
   calculateAgroDealersAmount,
   processExternalDisbursement,
@@ -322,6 +325,16 @@ export async function processInsurancePayment(
 
     const { loan, journalEntryId, remainingBalance } =
       await prisma.$transaction(async (tx) => {
+        // Gate booking on the kill-switch inside the transaction, so a rollback
+        // undoes everything if disbursements are off (or the flag is
+        // unreadable). Previously the switch was only consulted *after* this
+        // transaction committed, which meant disabling disbursements did not
+        // stop an insurance loan being booked — it only stopped the transfer,
+        // guaranteeing a farmer owed money they never received.
+        if (!(await areDisbursementsEnabledWithin(tx))) {
+          throw new DisbursementsDisabledError();
+        }
+
         const loanApplication = await tx.loanApplication.create({
           data: {
             borrowerId,
@@ -560,42 +573,39 @@ export async function processInsurancePayment(
     // External CBS credit (best-effort, mirrors autoDisburseFarmerLoan: the loan
     // stays booked and the result is reported as SUCCESS even if the upstream
     // transfer fails — the DisbursementTransaction tracks retry state).
-    let externalDisbursementAttempted = false;
+    //
+    // The kill-switch is NOT re-read here, deliberately: it gates whether the
+    // loan may be booked, and that gate is inside the transaction above. Once
+    // the loan is committed the transfer has to follow, or the books and the
+    // bank disagree.
+    let externalDisbursementAttempted = true;
     let externalDisbursementOk = false;
     let upstreamTransactionId: string | null = null;
 
     {
-      const disbursementsEnabled = await areDisbursementsEnabled();
-      if (disbursementsEnabled) {
-        externalDisbursementAttempted = true;
-        const ext = await processExternalDisbursement({
+      const ext = await processExternalDisbursement({
+        creditAccount,
+        agroDealerAccount: insurerAccount,
+        providerId: provider.id,
+        amount: disbursementTransferAmount,
+        loanId: loan.id,
+        actorId,
+      });
+      externalDisbursementOk = ext.ok;
+      upstreamTransactionId = ext.transactionId ?? null;
+      if (!ext.ok) {
+        logger.error(
+          `[processInsurancePayment] External disbursement failed for loan ${loan.id}: ${ext.error}`,
+        );
+        console.error("[processInsurancePayment] External disbursement failed", {
+          loanId: loan.id,
+          paymentId: payment.id,
           creditAccount,
-          agroDealerAccount: insurerAccount,
+          insurerAccount,
           providerId: provider.id,
           amount: disbursementTransferAmount,
-          loanId: loan.id,
-          actorId,
+          result: ext,
         });
-        externalDisbursementOk = ext.ok;
-        upstreamTransactionId = ext.transactionId ?? null;
-        if (!ext.ok) {
-          logger.error(
-            `[processInsurancePayment] External disbursement failed for loan ${loan.id}: ${ext.error}`,
-          );
-          console.error("[processInsurancePayment] External disbursement failed", {
-            loanId: loan.id,
-            paymentId: payment.id,
-            creditAccount,
-            insurerAccount,
-            providerId: provider.id,
-            amount: disbursementTransferAmount,
-            result: ext,
-          });
-        }
-      } else {
-        logger.warn(
-          `[processInsurancePayment] Disbursements disabled; insurance loan ${loan.id} posted internally only`,
-        );
       }
     }
 
@@ -665,6 +675,20 @@ export async function processInsurancePayment(
       },
     };
   } catch (error: any) {
+    if (error instanceof DisbursementsDisabledError) {
+      // The booking transaction rolled back, so nothing was written and the
+      // payment is still approvable. Retryable rather than failed: report it as
+      // a soft error so the approver sees "could not be processed" and can try
+      // again once disbursements are re-enabled.
+      logger.warn(
+        `[processInsurancePayment] Disbursements disabled mid-booking; rolled back payment ${insurancePaymentId}`,
+      );
+      return softError(
+        insurancePaymentId,
+        "",
+        "Disbursements are currently disabled.",
+      );
+    }
     console.error("[processInsurancePayment] Error:", error);
     return {
       paymentId: insurancePaymentId,

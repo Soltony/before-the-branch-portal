@@ -7,7 +7,11 @@ import {
   calculateInclusiveTax,
 } from "@/lib/loan-calculator";
 import { addDays } from "date-fns";
-import { areDisbursementsEnabled } from "@/lib/disbursement-control";
+import {
+  areDisbursementsEnabled,
+  areDisbursementsEnabledWithin,
+  DisbursementsDisabledError,
+} from "@/lib/disbursement-control";
 import {
   calculateAgroDealersAmount,
   processExternalDisbursement,
@@ -265,12 +269,21 @@ export async function autoDisburseFarmerLoan(
       };
     }
 
-    const forcedProviderId = process.env.FORCE_PROVIDER_ID ?? "PRO0001";
+    const forcedProviderId = process.env.FORCE_PROVIDER_ID;
     const disbursementTransferAmount =
       inclusiveTaxAmount > 0 ? netDisbursedAmount : disbursementAmount;
 
     const { loan, journalEntryId, remainingBalance } =
       await prisma.$transaction(async (tx) => {
+        // Re-read the kill-switch inside the transaction. The check above ran
+        // before a series of lookups, so an operator could have disabled
+        // disbursements in between; re-reading here means the switch and the
+        // booking are evaluated against the same transaction, and a rollback
+        // undoes everything if it is off.
+        if (!(await areDisbursementsEnabledWithin(tx))) {
+          throw new DisbursementsDisabledError();
+        }
+
         // Atomically claim this loan request as the first statement in the
         // transaction. The UPDATE takes an exclusive row lock; a racing caller
         // blocks here, then re-evaluates the WHERE after we commit, matches 0
@@ -494,40 +507,39 @@ export async function autoDisburseFarmerLoan(
         };
       });
 
-    let externalDisbursementAttempted = false;
+    // The kill-switch is NOT re-read here, deliberately. It gates whether a loan
+    // may be *booked*, and that gate is now inside the transaction above. Once
+    // the loan is committed the transfer has to follow: skipping it because the
+    // switch flipped in the intervening moment is what produced a farmer owing
+    // money they never received. A switch flipped because the core is down
+    // simply means this call fails and is recorded FAILED for reversal/retry,
+    // which is the correct, visible outcome.
+    let externalDisbursementAttempted = true;
     let externalDisbursementOk = false;
 
     {
-      const disbursementsEnabled = await areDisbursementsEnabled();
-      if (disbursementsEnabled) {
-        externalDisbursementAttempted = true;
-        const ext = await processExternalDisbursement({
+      const ext = await processExternalDisbursement({
+        creditAccount,
+        agroDealerAccount,
+        providerId: provider.id,
+        amount: disbursementTransferAmount,
+        loanId: loan.id,
+        actorId: "lersha-integration",
+      });
+      externalDisbursementOk = ext.ok;
+      if (!ext.ok) {
+        logger.error(
+          `[autoDisburseFarmerLoan] External disbursement failed for loan ${loan.id}: ${ext.error}`,
+        );
+        console.error("[autoDisburseFarmerLoan] External disbursement failed", {
+          loanId: loan.id,
+          lershaLoanRequestId,
           creditAccount,
           agroDealerAccount,
           providerId: provider.id,
           amount: disbursementTransferAmount,
-          loanId: loan.id,
-          actorId: "lersha-integration",
+          result: ext,
         });
-        externalDisbursementOk = ext.ok;
-        if (!ext.ok) {
-          logger.error(
-            `[autoDisburseFarmerLoan] External disbursement failed for loan ${loan.id}: ${ext.error}`,
-          );
-          console.error("[autoDisburseFarmerLoan] External disbursement failed", {
-            loanId: loan.id,
-            lershaLoanRequestId,
-            creditAccount,
-            agroDealerAccount,
-            providerId: provider.id,
-            amount: disbursementTransferAmount,
-            result: ext,
-          });
-        }
-      } else {
-        logger.warn(
-          `[autoDisburseFarmerLoan] Disbursements disabled; loan ${loan.id} posted internally only`,
-        );
       }
     }
 
@@ -600,6 +612,19 @@ export async function autoDisburseFarmerLoan(
       externalDisbursementOk,
     };
   } catch (error: any) {
+    if (error instanceof DisbursementsDisabledError) {
+      // The transaction rolled back, so nothing was booked and the request is
+      // still OTP_VERIFIED — it can be disbursed via /api/farmer/disbursement
+      // once disbursements are re-enabled.
+      logger.warn(
+        `[autoDisburseFarmerLoan] Disbursements disabled mid-booking; rolled back request ${lershaLoanRequestId}`,
+      );
+      return {
+        success: false,
+        message: "Disbursements are currently disabled.",
+        error: "DISBURSEMENTS_DISABLED",
+      };
+    }
     if (error instanceof ConcurrentDisbursementError) {
       // A concurrent caller already claimed this request. If it has finished,
       // report success idempotently; otherwise report that it is in progress.

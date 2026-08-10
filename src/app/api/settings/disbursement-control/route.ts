@@ -12,7 +12,15 @@ export async function GET() {
   }
 
   const control = await getDisbursementControl();
-  return NextResponse.json({ enabled: control.enabled, updatedAt: control.updatedAt });
+  // `unavailable` distinguishes "an operator switched disbursements off" from
+  // "the flag could not be read, so we are refusing by default" — both report
+  // enabled: false, but they need different operator responses.
+  return NextResponse.json({
+    enabled: control.enabled,
+    updatedAt: control.updatedAt,
+    unavailable: control.unavailable,
+    reason: control.reason,
+  });
 }
 
 const updateSchema = z.object({

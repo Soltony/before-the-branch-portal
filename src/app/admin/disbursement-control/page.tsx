@@ -14,6 +14,8 @@ export default async function DisbursementControlPage() {
   return (
     <DisbursementControlClient
       initialEnabled={control.enabled}
+      unavailable={control.unavailable}
+      unavailableReason={control.reason}
       canUpdate={!!user.permissions?.['disbursement-control']?.update}
     />
   );

@@ -9,7 +9,10 @@ import {
 } from "@/lib/loan-calculator";
 import { addDays } from "date-fns";
 import { areDisbursementsEnabled } from "@/lib/disbursement-control";
-import { processExternalDisbursement } from "@/lib/external-disbursement";
+import {
+  calculateAgroDealersAmount,
+  processExternalDisbursement,
+} from "@/lib/external-disbursement";
 import type { InsuranceConfirmationRequest } from "@/lib/lersha/types";
 
 /**
@@ -180,6 +183,33 @@ export async function processInsurancePayment(
         payment.id,
         externalFarmerId,
         `No disbursement account selected for ${farmer.farmerName}. Set the farmer's account to credit before approving.`,
+      );
+    }
+
+    // Second transfer leg. The core moves money in two hops — provider ledger →
+    // farmer, then farmer → beneficiary — and the beneficiary account travels in
+    // the same `agroDealerAccount`/`agroDealersAmount` pair for both flows (see
+    // autoDisburseFarmerLoan). For insurance the beneficiary is the insurer:
+    // Lersha delivers its account on the insurance loan purpose, reusing
+    // agroDealerAccountNo, which is also what syncInsuranceAccountsFromFarmers
+    // seeds InsuranceAccount from. Prefer the purpose that priced this payment
+    // (exact), then the insurer mapping — mirroring the display-time resolution
+    // in /api/insurance-payments. Without it the core is called with a single
+    // leg and the premium never leaves the farmer's account.
+    let insurerAccount = "";
+    if (payment.loanPurposeId) {
+      const pricingPurpose = await prisma.lershaLoanPurpose.findUnique({
+        where: { id: payment.loanPurposeId },
+        select: { agroDealerAccountNo: true },
+      });
+      insurerAccount = pricingPurpose?.agroDealerAccountNo?.trim() || "";
+    }
+    if (!insurerAccount) {
+      insurerAccount = insuranceAccount?.accountNumber?.trim() || "";
+    }
+    if (!insurerAccount) {
+      logger.warn(
+        `[processInsurancePayment] No insurer account for payment ${payment.id} (${payment.insuranceName ?? "unknown insurer"}); core will be called without agroDealerAccount/agroDealersAmount`,
       );
     }
 
@@ -436,6 +466,14 @@ export async function processInsurancePayment(
             disbursementStatus: "PENDING",
             requestPayload: JSON.stringify({
               creditAccount,
+              ...(insurerAccount
+                ? {
+                    agroDealerAccount: insurerAccount,
+                    agroDealersAmount: calculateAgroDealersAmount(
+                      disbursementTransferAmount,
+                    ),
+                  }
+                : {}),
               providerId: forcedProviderId,
               amount: disbursementTransferAmount,
               loanId: createdLoan.id,
@@ -532,6 +570,7 @@ export async function processInsurancePayment(
         externalDisbursementAttempted = true;
         const ext = await processExternalDisbursement({
           creditAccount,
+          agroDealerAccount: insurerAccount,
           providerId: provider.id,
           amount: disbursementTransferAmount,
           loanId: loan.id,
@@ -543,6 +582,15 @@ export async function processInsurancePayment(
           logger.error(
             `[processInsurancePayment] External disbursement failed for loan ${loan.id}: ${ext.error}`,
           );
+          console.error("[processInsurancePayment] External disbursement failed", {
+            loanId: loan.id,
+            paymentId: payment.id,
+            creditAccount,
+            insurerAccount,
+            providerId: provider.id,
+            amount: disbursementTransferAmount,
+            result: ext,
+          });
         }
       } else {
         logger.warn(
@@ -587,6 +635,10 @@ export async function processInsurancePayment(
         journalEntryId,
         creditAccount,
         creditAccountName: farmer.disbursementAccountName,
+        insurerAccount: insurerAccount || null,
+        agroDealersAmount: insurerAccount
+          ? calculateAgroDealersAmount(disbursementTransferAmount)
+          : null,
         transactionId,
         externalDisbursementAttempted,
         externalDisbursementOk,

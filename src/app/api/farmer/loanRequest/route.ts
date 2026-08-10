@@ -198,17 +198,17 @@ export async function POST(req: NextRequest) {
     });
 
     // Send OTP directly to farmer via SMS
-    // const smsText = `Your NIB loan verification code is: ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code.`;
-    // console.log("[loanRequest] Sending OTP SMS:", {
-    //   phoneNumber: farmer.phoneNumber,
-    //   requestId: loanRequest.id,
-    // });
-    // const smsResult = await sendSms(farmer.phoneNumber, smsText);
-    // console.log("[loanRequest] SMS provider response:", smsResult);
+    const smsText = `Your NIB loan verification code is: ${otp}. It expires in ${OTP_EXPIRY_MINUTES} minutes. Do not share this code.`;
+    console.log("[loanRequest] Sending OTP SMS:", {
+      phoneNumber: farmer.phoneNumber,
+      requestId: loanRequest.id,
+    });
+    const smsResult = await sendSms(farmer.phoneNumber, smsText);
+    console.log("[loanRequest] SMS provider response:", smsResult);
 
-    // if (!smsResult.ok) {
-    //   console.error("[loanRequest] Failed to send OTP SMS:", smsResult);
-    // }
+    if (!smsResult.ok) {
+      console.error("[loanRequest] Failed to send OTP SMS:", smsResult);
+    }
 
     const response = {
       message: "OTP sent to farmer's registered phone number.",

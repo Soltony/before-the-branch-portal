@@ -174,8 +174,17 @@ export async function processExternalDisbursement(
 
   const requestPayload = JSON.stringify({ ...corePayload, loanId });
 
+  const logPrefix = "[processExternalDisbursement]";
+  console.log(`${logPrefix} loanId=${loanId ?? "none"} url=${apiUrl ?? "MISSING"}`, {
+    credentials: user && pass ? "set" : "missing",
+    providerId: sendProviderId,
+    originalProviderId: providerId,
+    payload: corePayload,
+  });
+
   if (!apiUrl) {
     const errMsg = "Missing EXTERNAL_DISBURSEMENT_URL env var";
+    console.error(`${logPrefix} ${errMsg}`);
     await findOrCreateDisbursementTransaction(loanId, {
       providerId: sendProviderId,
       originalProviderId: providerId,
@@ -271,6 +280,15 @@ export async function processExternalDisbursement(
     const isSuccess = res.ok && res.status >= 200 && res.status < 300;
     const disbursementStatus = isSuccess ? "SUCCESS" : "FAILED";
 
+    // The upstream explains a rejection in the body (unknown account, provider
+    // mismatch, insufficient funds); log it verbatim so a FAILED disbursement can
+    // be diagnosed without going to the DisbursementTransaction row.
+    const logResponse = isSuccess ? console.log : console.error;
+    logResponse(
+      `${logPrefix} HTTP ${res.status} ${res.statusText} — ${disbursementStatus} (loanId=${loanId ?? "none"}, ${Date.now() - startedAt}ms)`,
+      { transactionId: upstreamTransactionId, body: payload ?? txt },
+    );
+
     await findOrCreateDisbursementTransaction(loanId, {
       transactionId: upstreamTransactionId ?? undefined,
       providerId: sendProviderId,
@@ -296,10 +314,22 @@ export async function processExternalDisbursement(
       statusCode: res.status,
       disbursementStatus,
       transactionId: upstreamTransactionId,
-      error: isSuccess ? undefined : "Upstream disbursement failed",
+      error: isSuccess
+        ? undefined
+        : `Upstream disbursement failed (HTTP ${res.status}): ${
+            typeof payload === "string"
+              ? payload
+              : payload
+                ? JSON.stringify(payload)
+                : (txt ?? "<empty response body>")
+          }`,
     };
   } catch (fetchErr: any) {
     const details = String(fetchErr?.message ?? fetchErr);
+    console.error(
+      `${logPrefix} fetch threw after ${Date.now() - startedAt}ms (loanId=${loanId ?? "none"}, url=${apiUrl}): ${details}`,
+      fetchErr?.cause ?? fetchErr,
+    );
     await auditExternalApiError(
       {
         actorId,

@@ -111,9 +111,71 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // The insurer's own account, for display beside the credited farmer account.
+    // It is never stored on the payment: Lersha delivers it on the insurance
+    // loan purpose, reusing the agro dealer field, which is also where
+    // syncInsuranceAccountsFromFarmers seeds InsuranceAccount from. Prefer the
+    // purpose that priced this payment (exact), then the payment's mapping, then
+    // the ACTIVE mapping for the insurer name — the last two mirroring the
+    // approval-time resolution in lib/lersha/insurance.ts.
+    const insurerAccountByPaymentId = new Map<string, string>();
+    if (payments.length > 0) {
+      const purposeIds = Array.from(
+        new Set(
+          payments
+            .map((p) => p.loanPurposeId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
+      const accountByPurposeId = new Map<string, string>();
+      if (purposeIds.length > 0) {
+        const purposes = await prisma.lershaLoanPurpose.findMany({
+          where: { id: { in: purposeIds } },
+          select: { id: true, agroDealerAccountNo: true },
+        });
+        for (const lp of purposes) {
+          const acc = lp.agroDealerAccountNo?.trim();
+          if (acc) accountByPurposeId.set(lp.id, acc);
+        }
+      }
+
+      const unmappedNames = Array.from(
+        new Set(
+          payments
+            .filter((p) => !p.insuranceAccount && p.insuranceName)
+            .map((p) => p.insuranceName as string),
+        ),
+      );
+      const accountByInsurerName = new Map<string, string>();
+      if (unmappedNames.length > 0) {
+        const mappings = await prisma.insuranceAccount.findMany({
+          where: { insuranceName: { in: unmappedNames }, status: "ACTIVE" },
+          select: { insuranceName: true, accountNumber: true },
+        });
+        for (const m of mappings) {
+          if (m.accountNumber) {
+            accountByInsurerName.set(m.insuranceName, m.accountNumber);
+          }
+        }
+      }
+
+      for (const p of payments) {
+        const acc =
+          (p.loanPurposeId ? accountByPurposeId.get(p.loanPurposeId) : null) ||
+          p.insuranceAccount?.accountNumber ||
+          (p.insuranceName ? accountByInsurerName.get(p.insuranceName) : null);
+        if (acc) insurerAccountByPaymentId.set(p.id, acc);
+      }
+    }
+
+    const paymentsWithInsurer = payments.map((p) => ({
+      ...p,
+      insurerAccountNumber: insurerAccountByPaymentId.get(p.id) ?? null,
+    }));
+
     // Assemble batches in the paged order.
-    const byBatch = new Map<string, typeof payments>();
-    for (const p of payments) {
+    const byBatch = new Map<string, typeof paymentsWithInsurer>();
+    for (const p of paymentsWithInsurer) {
       const key = p.batchId ?? p.id;
       if (!byBatch.has(key)) byBatch.set(key, []);
       byBatch.get(key)!.push(p);

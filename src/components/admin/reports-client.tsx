@@ -834,6 +834,8 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
             "Debit Account": r.debitAccount,
             "Credit Account (Customer Account)":
               r.borrowerAccount || r.creditAccount,
+            "Agro Dealer/Insurance Account":
+              r.agroDealerOrInsuranceAccount || "",
             "Txn Status":
               r.disbursementOutcome ||
               r.disbursementStatusText ||
@@ -1681,6 +1683,7 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
                   <TableHead>Customer Name</TableHead>
                   <TableHead>Debit Account</TableHead>
                   <TableHead>Credit Account (Customer Account)</TableHead>
+                  <TableHead>Agro Dealer/Insurance Account</TableHead>
                   <TableHead>Txn Status</TableHead>
                   <TableHead>CBS Reference</TableHead>
                   <TableHead className="text-right">
@@ -1724,7 +1727,7 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={13} className="h-24 text-center">
+                    <TableCell colSpan={15} className="h-24 text-center">
                       <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                     </TableCell>
                   </TableRow>
@@ -1760,6 +1763,9 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
                         </TableCell>
                         <TableCell className="font-mono">
                           {row.borrowerAccount || row.creditAccount}
+                        </TableCell>
+                        <TableCell className="font-mono">
+                          {row.agroDealerOrInsuranceAccount || "—"}
                         </TableCell>
                         <TableCell>
                           {row.disbursementOutcome ||
@@ -1797,7 +1803,7 @@ export function ReportsClient({ providers }: { providers: LoanProvider[] }) {
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={13} className="h-24 text-center">
+                    <TableCell colSpan={15} className="h-24 text-center">
                       No results found for the selected filters.
                     </TableCell>
                   </TableRow>

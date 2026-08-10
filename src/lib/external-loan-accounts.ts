@@ -11,7 +11,11 @@ export async function fetchAccountsByPhone(phoneNumber: string): Promise<{
   const user = process.env.EXTERNAL_API_USERNAME;
   const pass = process.env.EXTERNAL_API_PASSWORD;
 
-  console.log(`${logPrefix} Starting lookup for phone:`, phoneNumber);
+  // The upstream answers 400 for an E.164 `+` prefix — it expects the country
+  // code bare (251...), so send the digits only.
+  const upstreamPhone = phoneNumber.trim().replace(/^\+/, "");
+
+  console.log(`${logPrefix} Starting lookup for phone:`, upstreamPhone);
 
   if (!apiUrl) {
     console.error(`${logPrefix} EXTERNAL_API_URL not configured`);
@@ -29,7 +33,7 @@ export async function fetchAccountsByPhone(phoneNumber: string): Promise<{
       "Content-Type": "application/json",
       Authorization: auth,
     },
-    body: JSON.stringify({ phoneNumber }),
+    body: JSON.stringify({ phoneNumber: upstreamPhone }),
   });
 
   console.log(`${logPrefix} HTTP status:`, res.status);

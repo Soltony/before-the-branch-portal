@@ -514,6 +514,15 @@ export async function autoDisburseFarmerLoan(
           logger.error(
             `[autoDisburseFarmerLoan] External disbursement failed for loan ${loan.id}: ${ext.error}`,
           );
+          console.error("[autoDisburseFarmerLoan] External disbursement failed", {
+            loanId: loan.id,
+            lershaLoanRequestId,
+            creditAccount,
+            agroDealerAccount,
+            providerId: provider.id,
+            amount: disbursementTransferAmount,
+            result: ext,
+          });
         }
       } else {
         logger.warn(

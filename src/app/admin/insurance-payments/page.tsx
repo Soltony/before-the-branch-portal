@@ -114,6 +114,12 @@ interface InsurancePayment {
     accountNumber: string;
     status: string;
   } | null;
+  /**
+   * The insurer's own account, resolved server-side from the insurance loan
+   * purpose or the insurer mapping. Reference only — approvals credit the
+   * farmer's account, never this one.
+   */
+  insurerAccountNumber: string | null;
 }
 
 interface Batch {
@@ -750,6 +756,7 @@ function BatchRow({
                 <TableHead>Farmer</TableHead>
                 <TableHead>Insurer</TableHead>
                 <TableHead>Farmer Account (credited)</TableHead>
+                <TableHead>Insurance Account Number</TableHead>
                 <TableHead className="text-right">Amount</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Remaining</TableHead>
@@ -793,6 +800,18 @@ function BatchRow({
                           <AlertTriangle className="h-3 w-3" />
                           Not selected
                         </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {p.insurerAccountNumber ? (
+                        <>
+                          <div>{p.insurerAccountNumber}</div>
+                          <div className="font-sans text-[11px] text-muted-foreground">
+                            {p.insuranceName ?? '—'}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="font-sans text-muted-foreground">—</span>
                       )}
                     </TableCell>
                     <TableCell className="text-right font-mono font-semibold">
@@ -929,6 +948,21 @@ function PaymentDetailsDialog({
                   </>
                 ) : (
                   <span className="text-amber-600">Not selected</span>
+                )
+              }
+            />
+            <DetailRow
+              label="Insurance Account Number"
+              value={
+                payment.insurerAccountNumber ? (
+                  <>
+                    <span className="font-mono">{payment.insurerAccountNumber}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Insurer&apos;s account — reference only, not credited
+                    </span>
+                  </>
+                ) : (
+                  '—'
                 )
               }
             />

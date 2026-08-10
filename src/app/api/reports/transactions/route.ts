@@ -33,6 +33,22 @@ async function batchCount<T>(
   return total;
 }
 
+/**
+ * Pull `agroDealerAccount` out of a stored disbursement requestPayload. The
+ * agro dealer account is not a column on DisbursementTransaction — it only
+ * exists inside the JSON body sent to the core, and only for agri-input loans.
+ */
+function readAgroDealerAccount(requestPayload: unknown): string | null {
+  if (typeof requestPayload !== "string" || !requestPayload) return null;
+  try {
+    const parsed = JSON.parse(requestPayload);
+    const acc = parsed?.agroDealerAccount;
+    return typeof acc === "string" && acc.trim() ? acc.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 // Helper function to build loanId filter that handles SQL Server's parameter limit
 function buildLoanIdFilter(loanIds: string[]): any {
   if (loanIds.length === 0) {
@@ -456,6 +472,74 @@ export async function GET(request: NextRequest) {
       new Set(journalEntries.map((j) => j.loanId).filter(Boolean))
     ) as string[];
 
+    // Insurer account behind each insurance-payment loan. Unlike the agro dealer
+    // account this is not in the disbursement requestPayload (the core is only
+    // told the NIB insuranceId), so resolve it via the LershaInsurancePayment
+    // that booked the loan. Bounded by page size, so no IN-clause batching.
+    const insuranceAccountByLoanId = new Map<string, string>();
+    if (loanIds.length > 0) {
+      const insurancePayments = await prisma.lershaInsurancePayment.findMany({
+        where: { loanId: { in: loanIds } },
+        select: {
+          loanId: true,
+          loanPurposeId: true,
+          insuranceName: true,
+          insuranceAccount: { select: { accountNumber: true } },
+        },
+      });
+
+      // Source 1 (most precise): the insurance LershaLoanPurpose that priced
+      // this payment. Lersha reuses the agro dealer fields for the insurer at
+      // registration, so the insurer's account arrives as agroDealerAccountNo —
+      // see syncInsuranceAccountsFromFarmers in lib/lersha/insurance-accounts.ts.
+      const purposeIds = insurancePayments
+        .map((p) => p.loanPurposeId)
+        .filter((id): id is string => Boolean(id));
+      const accountByPurposeId = new Map<string, string>();
+      if (purposeIds.length > 0) {
+        const purposes = await prisma.lershaLoanPurpose.findMany({
+          where: { id: { in: purposeIds } },
+          select: { id: true, agroDealerAccountNo: true },
+        });
+        for (const lp of purposes) {
+          const acc = lp.agroDealerAccountNo?.trim();
+          if (acc) accountByPurposeId.set(lp.id, acc);
+        }
+      }
+
+      // Source 3: mirrors the approval-time fallback in lib/lersha/insurance.ts
+      // — payments approved before an insurer mapping existed have no
+      // insuranceAccountId, so fall back to the active mapping for the name.
+      const unmappedNames = Array.from(
+        new Set(
+          insurancePayments
+            .filter((p) => !p.insuranceAccount && p.insuranceName)
+            .map((p) => p.insuranceName as string)
+        )
+      );
+      const accountByInsurerName = new Map<string, string>();
+      if (unmappedNames.length > 0) {
+        const mappings = await prisma.insuranceAccount.findMany({
+          where: { insuranceName: { in: unmappedNames }, status: "ACTIVE" },
+          select: { insuranceName: true, accountNumber: true },
+        });
+        for (const m of mappings) {
+          if (m.accountNumber) {
+            accountByInsurerName.set(m.insuranceName, m.accountNumber);
+          }
+        }
+      }
+
+      for (const p of insurancePayments) {
+        if (!p.loanId) continue;
+        const account =
+          (p.loanPurposeId ? accountByPurposeId.get(p.loanPurposeId) : null) ||
+          p.insuranceAccount?.accountNumber ||
+          (p.insuranceName ? accountByInsurerName.get(p.insuranceName) : null);
+        if (account) insuranceAccountByLoanId.set(p.loanId, account);
+      }
+    }
+
     const disbursementSelect = {
       id: true,
       transactionId: true,
@@ -463,6 +547,10 @@ export async function GET(request: NextRequest) {
       providerId: true,
       originalProviderId: true,
       creditAccount: true,
+      // The agro dealer account is not a column on DisbursementTransaction; it
+      // only exists inside the JSON we sent to the core. Small field (~150
+      // chars), unlike rawResponse/responsePayload which stay excluded.
+      requestPayload: true,
       amount: true,
       statusCode: true,
       disbursementStatus: true,
@@ -815,6 +903,7 @@ export async function GET(request: NextRequest) {
         let disbursementStatusText: string | null = null;
         let disbursementOutcome: string | null = null;
         let borrowerAccount: string | null = null;
+        let agroDealerAccount: string | null = null;
 
         if (loan && loan.borrowerId) {
           const pa = phoneAccountMap.get(loan.borrowerId) || null;
@@ -906,6 +995,10 @@ export async function GET(request: NextRequest) {
               borrowerAccount = match.creditAccount;
             }
 
+            // Only agri-input (Lersha) disbursements carry an agro dealer; for
+            // every other loan this stays null and the column renders empty.
+            agroDealerAccount = readAgroDealerAccount(match.requestPayload);
+
             // Determine status: prefer disbursementStatus field (SUCCESS/FAILED), fallback to statusCode
             if (matchDisbursementStatus === "SUCCESS" || 
                 (disbursementStatusCode !== null && disbursementStatusCode >= 200 && disbursementStatusCode < 300)) {
@@ -943,6 +1036,11 @@ export async function GET(request: NextRequest) {
           productType: loan?.product?.name || null,
           borrowerId: loan?.borrowerId || null,
           borrowerAccount,
+          // The counterparty behind the loan: the agro dealer for agri-input
+          // loans, the insurer for insurance payments. A loan is never both.
+          agroDealerOrInsuranceAccount:
+            agroDealerAccount ??
+            (loan?.id ? insuranceAccountByLoanId.get(loan.id) ?? null : null),
           principalDisbursed,
           netDisbursed:
             loan?.netDisbursedAmount != null

@@ -31,6 +31,19 @@ type ApprovalInput = z.infer<typeof approvalSchema>;
 export async function POST(req: NextRequest) {
   try {
     console.log("[farmer/approval] Request received");
+
+    // Approving a farmer is an admin action, not part of the Lersha contract,
+    // so it requires a signed-in user. Checked before the body is read so an
+    // unauthenticated caller can't probe which farmer_ids exist via the 404
+    // below. It also guards the district scoping further down:
+    // getDistrictCodeFromUser returns null for a missing user, which reads as
+    // "no district restriction" — i.e. wider access than a real District user.
+    const actingUser = await getUserFromSession();
+    if (!actingUser) {
+      console.warn("[farmer/approval] Rejected unauthenticated decision attempt");
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
     const body = await req.json();
     console.log("[farmer/approval] Incoming payload:", body);
 
@@ -66,8 +79,7 @@ export async function POST(req: NextRequest) {
     }
 
     // A District user approves only their own district's farmers.
-    const actingUser = await getUserFromSession();
-    const actingDistrictCode = getDistrictCodeFromUser(actingUser ?? {});
+    const actingDistrictCode = getDistrictCodeFromUser(actingUser);
     if (actingDistrictCode != null && farmer.districtCode !== actingDistrictCode) {
       console.warn("[farmer/approval] Cross-district decision blocked:", {
         farmer_id,

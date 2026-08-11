@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { decryptJwt } from '@/lib/session';
 import { allMenuItems } from './lib/menu-items';
 import type { Permissions } from '@/lib/types';
+import {
+  LERSHA_API_KEY_HEADER,
+  isLershaInboundPath,
+  verifyLershaApiKey,
+} from '@/lib/lersha/inbound-auth';
 
 function findLongestMatchingMenuItem(path: string) {
   let best: (typeof allMenuItems)[number] | undefined;
@@ -62,7 +67,8 @@ function withSecurityHeaders(res: NextResponse, csp: string, nonce: string) {
 const protectedAdminRoutes = [
   '/admin', '/api/admin', '/api/audit-logs', '/api/approvals', '/api/roles',
   '/api/settings', '/api/providers', '/api/users', '/api/reports',
-  '/api/insurance-payments', '/api/insurance-accounts'
+  '/api/insurance-payments', '/api/insurance-accounts',
+  '/api/farmer/approval'
 ];
 const publicRoutes = ['/admin/login', '/loan/connect', '/admin/change-password'];
 
@@ -166,6 +172,31 @@ export default async function middleware(req: NextRequest) {
   requestHeaders.set('Content-Security-Policy', cspHeader);
 
   let response = NextResponse.next({ request: { headers: requestHeaders } });
+
+  // ----------------------------------------
+  // LERSHA INBOUND API KEY (server-to-server)
+  // ----------------------------------------
+  // Runs before the cookie-based checks below: Lersha authenticates with a
+  // shared key, never a session, and these routes are in neither the admin nor
+  // the mini-app protected list.
+  if (isLershaInboundPath(path)) {
+    const auth = verifyLershaApiKey(req.headers.get(LERSHA_API_KEY_HEADER));
+
+    if (!auth.ok) {
+      console.warn(`[Lersha][Inbound] Rejected ${req.method} ${path} — key ${auth.reason}`);
+      return withSecurityHeaders(
+        NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+        cspHeader,
+        nonce
+      );
+    }
+
+    if (auth.reason === 'not-configured') {
+      console.warn(
+        `[Lersha][Inbound] LERSHA_INBOUND_API_KEY is not set — ${req.method} ${path} allowed unauthenticated`
+      );
+    }
+  }
 
   // ----------------------------------------
   // MINI-APP ACCESS CONTROL (super-app token required)

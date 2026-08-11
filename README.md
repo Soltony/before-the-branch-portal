@@ -128,3 +128,34 @@ EXTERNAL_DISTRIBUTION_URL="http://192.168.100.56:8280/nibtera-loan/distribution"
 EXTERNAL_API_USERNAME="nibLoan"
 EXTERNAL_API_PASSWORD="123456"
 ```
+
+### Lersha Integration
+
+The Lersha integration authenticates with an API key in each direction. The two
+keys are deliberately different: each side issues the key it accepts, so neither
+party's exposure compromises the other direction, and either key can be rotated
+without coordinating the other.
+
+```env
+# Outbound — issued by Lersha, sent as X-API-Key on every call we make to them.
+LERSHA_API_KEY="lersha_..."
+LERSHA_API_BASE_URL="https://dev-api-integration.lersha.com/api/v1"
+
+# Inbound — issued by US, required as X-API-Key on calls Lersha makes to
+# /api/v1/nib/* and /api/farmer/*. Comma-separated to accept both the old and
+# new key during a rotation.
+LERSHA_INBOUND_API_KEY="nib_...,nib_..."
+```
+
+`/api/farmer/approval` is exempt: despite the shared namespace it is the bank's
+own admin approve/reject action, called from the admin UI with a session cookie
+and no API key. Any other internal route added under these prefixes must be added
+to `INTERNAL_ROUTE_EXCEPTIONS` in `inbound-auth.ts` or it will start returning 401.
+
+**`LERSHA_INBOUND_API_KEY` fails open.** While it is unset the inbound endpoints
+accept unauthenticated requests and each one logs
+`[Lersha][Inbound] LERSHA_INBOUND_API_KEY is not set`. That is what lets the check
+ship before Lersha starts sending the header — but it means a deploy that loses
+the variable silently unauthenticates the integration. Treat that log line in
+production as an incident. Enforcement is in [src/middleware.ts](src/middleware.ts)
+via [src/lib/lersha/inbound-auth.ts](src/lib/lersha/inbound-auth.ts).

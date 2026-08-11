@@ -12,6 +12,8 @@
  * the client UI imports only the types.
  */
 
+import { getDistrictLabel } from "../districts";
+
 export type DiffValueKind = "text" | "number" | "currency" | "date" | "url";
 
 export interface FieldChange {
@@ -79,6 +81,8 @@ export interface ProfileSnapshot {
   emergencyContactPhone: string;
   emergencyContactRelationship: string;
   emergencyContactAddress: string;
+  /** Stored as the readable label ("07 - Bahirdar District") so diffs read well. */
+  districtCode: string | null;
 }
 
 export interface ReviewBaseline {
@@ -88,8 +92,12 @@ export interface ReviewBaseline {
 }
 
 /** A LershaFarmer row (or anything shaped like its profile fields). */
-export type FarmerProfileLike = Omit<ProfileSnapshot, "scoreCalculationDate"> & {
+export type FarmerProfileLike = Omit<
+  ProfileSnapshot,
+  "scoreCalculationDate" | "districtCode"
+> & {
   scoreCalculationDate: Date | string;
+  districtCode: number | null;
 };
 
 const PROFILE_FIELDS: {
@@ -100,6 +108,7 @@ const PROFILE_FIELDS: {
   { field: "farmerName", label: "Farmer Name", kind: "text" },
   { field: "phoneNumber", label: "Phone Number", kind: "text" },
   { field: "address", label: "Address", kind: "text" },
+  { field: "districtCode", label: "District", kind: "text" },
   { field: "primaryCropType", label: "Primary Crop", kind: "text" },
   { field: "farmRegistryNumber", label: "Farm Registry Number", kind: "text" },
   { field: "totalFarmSizeInHectare", label: "Total Farm Size (ha)", kind: "number" },
@@ -185,6 +194,8 @@ export function toProfileSnapshot(farmer: FarmerProfileLike): ProfileSnapshot {
     emergencyContactPhone: farmer.emergencyContactPhone,
     emergencyContactRelationship: farmer.emergencyContactRelationship,
     emergencyContactAddress: farmer.emergencyContactAddress,
+    districtCode:
+      farmer.districtCode == null ? null : getDistrictLabel(farmer.districtCode),
   };
 }
 

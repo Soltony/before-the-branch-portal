@@ -26,6 +26,8 @@ function categoryKey(category: string): keyof CategoryAmounts {
 export async function getPortfolioLedgerMetrics(
   prisma: PrismaClient,
   providerId?: string,
+  /** Restricts the portfolio to these borrowers (district scoping); null = all. */
+  borrowerIds?: string[] | null,
 ): Promise<{
   totalDisbursed: number;
   receivables: {
@@ -47,6 +49,7 @@ export async function getPortfolioLedgerMetrics(
     where: {
       repaymentStatus: { not: 'REVERSED' },
       ...(providerId ? { product: { providerId } } : {}),
+      ...(borrowerIds ? { borrowerId: { in: borrowerIds } } : {}),
     },
     select: { id: true, loanAmount: true },
   });

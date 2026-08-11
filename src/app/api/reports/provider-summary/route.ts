@@ -9,6 +9,10 @@ import {
   getBranchCodeFromUser,
   resolveBranchBorrowerIds,
 } from '@/lib/branch-filter';
+import {
+  getDistrictCodeFromUser,
+  resolveDistrictBorrowerIds,
+} from '@/lib/district-filter';
 
 const getDates = (timeframe: string, from?: string, to?: string) => {
     if (from && to) {
@@ -145,8 +149,30 @@ export async function GET(req: NextRequest) {
                 agingReport: [],
             });
         }
-        const branchLoanFilter = branchBorrowerIds
-            ? { borrowerId: { in: branchBorrowerIds } }
+        const districtCode = getDistrictCodeFromUser(user);
+        const districtBorrowerIds = await resolveDistrictBorrowerIds(districtCode);
+        if (districtCode != null && districtBorrowerIds?.length === 0) {
+            return NextResponse.json({
+                portfolioSummary: { disbursed: 0, repaid: 0, outstanding: 0 },
+                collections: {},
+                totalCollected: 0,
+                incomeStatement: {},
+                netRealizedIncome: 0,
+                fundUtilization: 0,
+                agingReport: [],
+            });
+        }
+
+        // A user holds at most one of these roles, so at most one list is
+        // non-null; intersecting rather than picking one means a future second
+        // scope can only narrow access, never widen it.
+        const scopedBorrowerIds =
+            branchBorrowerIds && districtBorrowerIds
+                ? branchBorrowerIds.filter((id) => new Set(districtBorrowerIds).has(id))
+                : (districtBorrowerIds ?? branchBorrowerIds);
+
+        const scopedLoanFilter = scopedBorrowerIds
+            ? { borrowerId: { in: scopedBorrowerIds } }
             : {};
 
         // 1. Portfolio Summary
@@ -159,14 +185,14 @@ export async function GET(req: NextRequest) {
                 repaymentStatus: { not: 'REVERSED' },
                 ...(dateRange.gte && { disbursedDate: { gte: dateRange.gte } }),
                 ...(dateRange.lte && { disbursedDate: { lte: dateRange.lte } }),
-                ...branchLoanFilter,
+                ...scopedLoanFilter,
             },
         });
 
         const repaidResult = await prisma.payment.aggregate({
             _sum: { amount: true },
             where: {
-                loan: { product: { providerId }, ...branchLoanFilter },
+                loan: { product: { providerId }, ...scopedLoanFilter },
                 ...(dateRange.gte && { date: { gte: dateRange.gte } }),
                 ...(dateRange.lte && { date: { lte: dateRange.lte } }),
             },
@@ -177,7 +203,7 @@ export async function GET(req: NextRequest) {
             where: {
                 product: { providerId },
                 repaymentStatus: 'Unpaid',
-                ...branchLoanFilter,
+                ...scopedLoanFilter,
             }
         });
         
@@ -188,12 +214,12 @@ export async function GET(req: NextRequest) {
         };
         
         // 2. Collections Report
-        const collections = await getAggregatedLedgerEntries(providerId, timeframe, from, to, 'Debit', ['Received'], ['Principal', 'Interest', 'ServiceFee', 'Penalty'], branchBorrowerIds);
+        const collections = await getAggregatedLedgerEntries(providerId, timeframe, from, to, 'Debit', ['Received'], ['Principal', 'Interest', 'ServiceFee', 'Penalty'], scopedBorrowerIds);
         const totalCollected = Object.values(collections).reduce((sum, val) => sum + val, 0);
 
         // 3. Income Statement
-        const accruedIncome = await getAggregatedLedgerEntries(providerId, timeframe, from, to, 'Credit', ['Income'], ['Interest', 'ServiceFee', 'Penalty'], branchBorrowerIds);
-        const collectedIncome = await getAggregatedLedgerEntries(providerId, timeframe, from, to, 'Debit', ['Received'], ['Interest', 'ServiceFee', 'Penalty'], branchBorrowerIds);
+        const accruedIncome = await getAggregatedLedgerEntries(providerId, timeframe, from, to, 'Credit', ['Income'], ['Interest', 'ServiceFee', 'Penalty'], scopedBorrowerIds);
+        const collectedIncome = await getAggregatedLedgerEntries(providerId, timeframe, from, to, 'Debit', ['Received'], ['Interest', 'ServiceFee', 'Penalty'], scopedBorrowerIds);
         const netRealizedIncome = (collectedIncome.interest || 0) + (collectedIncome.servicefee || 0) + (collectedIncome.penalty || 0);
 
         // 4. Fund Utilization
@@ -204,7 +230,7 @@ export async function GET(req: NextRequest) {
                 where: {
                     product: { providerId },
                     repaymentStatus: { not: 'REVERSED' },
-                    ...branchLoanFilter,
+                    ...scopedLoanFilter,
                 },
             })
         )._sum.loanAmount || 0;
@@ -217,7 +243,7 @@ export async function GET(req: NextRequest) {
                 product: { providerId },
                 repaymentStatus: 'Unpaid',
                 dueDate: { lt: today },
-                ...branchLoanFilter,
+                ...scopedLoanFilter,
             },
             include: { 
                 borrower: { 

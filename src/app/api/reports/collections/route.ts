@@ -9,6 +9,11 @@ import {
   getBranchCodeFromUser,
   resolveBranchBorrowerIds,
 } from '@/lib/branch-filter';
+import {
+  applyDistrictFilterToNestedLoan,
+  getDistrictCodeFromUser,
+  resolveDistrictBorrowerIds,
+} from '@/lib/district-filter';
 
 const getDates = (timeframe: string, from?: string, to?: string) => {
     if (from && to) {
@@ -113,6 +118,15 @@ export async function GET(req: NextRequest) {
     }
     if (branchBorrowerIds) {
         applyBranchFilterToNestedLoan(whereClause.journalEntry as Record<string, unknown>, branchBorrowerIds);
+    }
+
+    const districtCode = getDistrictCodeFromUser(user);
+    const districtBorrowerIds = await resolveDistrictBorrowerIds(districtCode);
+    if (districtCode != null && districtBorrowerIds?.length === 0) {
+        return NextResponse.json({ data: [], total: 0, page: 1, pageSize, totalPages: 0 });
+    }
+    if (districtBorrowerIds) {
+        applyDistrictFilterToNestedLoan(whereClause.journalEntry as Record<string, unknown>, districtBorrowerIds);
     }
 
     try {

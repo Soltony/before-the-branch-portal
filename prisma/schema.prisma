@@ -28,6 +28,9 @@ model User {
   loanProviderId              String?
   loanProvider                LoanProvider?         @relation(fields: [loanProviderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   branchCode                  Int?
+  // Set for users on the District role: scopes farmer, insurance, report and
+  // dashboard data to the districts Lersha registers farmers under.
+  districtCode                Int?
   createdChanges              PendingChange[]       @relation("CreatedBy")
   approvedChanges             PendingChange[]       @relation("ApprovedBy")
   updatedDisbursementControls DisbursementControl[] @relation("DisbursementControlUpdatedBy")
@@ -847,6 +850,10 @@ model LershaFarmer {
   status                       String              @default("PENDING")
   marriageCertificateUrl       String?             @db.NVarChar(Max)
   address                      String              @db.NVarChar(Max)
+  // District the farmer was registered under, sent by Lersha on
+  // sendFarmerDetail. Nullable: farmers registered before Lersha shipped the
+  // field have none, and those stay visible only to non-district roles.
+  districtCode                 Int?
   // JSON snapshot (profile + loan purposes) captured before the first
   // unreviewed Lersha update is applied, so reviewers see exactly which
   // fields changed. Cleared when a reviewer approves or rejects the farmer.
@@ -868,6 +875,7 @@ model LershaFarmer {
 
   @@index([phoneNumber])
   @@index([status])
+  @@index([districtCode])
 }
 
 model LershaLoanPurpose {

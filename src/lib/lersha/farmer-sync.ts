@@ -177,5 +177,6 @@ export function farmerProfileData(farmer: SendFarmerDetailInput) {
     emergencyContactAddress: farmer.emergencyContactAddress,
     marriageCertificateUrl: farmer.marriageCertificateUrl ?? null,
     address: farmer.address,
+    districtCode: farmer.districtCode,
   };
 }

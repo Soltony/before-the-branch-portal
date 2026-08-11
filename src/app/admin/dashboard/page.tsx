@@ -5,24 +5,35 @@ import { getPortfolioLedgerMetrics } from '@/lib/dashboard-metrics';
 import prisma from '@/lib/prisma';
 import type { LoanProvider, DashboardData } from '@/lib/types';
 import { getUserFromSession } from '@/lib/user';
+import {
+    getDistrictCodeFromUser,
+    resolveDistrictBorrowerIds,
+} from '@/lib/district-filter';
 import { startOfToday, endOfToday, subDays } from 'date-fns';
 
 export const dynamic = 'force-dynamic';
 
-async function getProviderData(providerId?: string): Promise<DashboardData> {
+/**
+ * `borrowerIds` scopes every figure to a District user's own farmers. Lersha
+ * loans use the farmer's id as `Loan.borrowerId`, so an empty array correctly
+ * yields a zeroed dashboard rather than an unscoped one.
+ */
+async function getProviderData(providerId?: string, borrowerIds?: string[] | null): Promise<DashboardData> {
     const today = new Date();
     const startOfTodayDate = startOfToday(today);
     const endOfTodayDate = endOfToday(today);
 
     const providerFilter = providerId ? { product: { providerId: providerId }} : {};
     const providerWhereClause = providerId ? { id: providerId } : {};
-    
+    const borrowerFilter = borrowerIds ? { borrowerId: { in: borrowerIds } } : {};
+
     // Base query for ledger entries
     const ledgerEntryWhere = providerId ? { ledgerAccount: { providerId: providerId } } : {};
 
-    const loans = await prisma.loan.findMany({ 
+    const loans = await prisma.loan.findMany({
         where: {
             ...providerFilter,
+            ...borrowerFilter,
             repaymentStatus: { not: 'REVERSED' },
         },
         select: {
@@ -42,12 +53,14 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
         }
     });
     
-    const usersCount = providerId 
+    const usersCount = providerId
         ? await prisma.loan.groupBy({
             by: ['borrowerId'],
-                        where: { product: { providerId: providerId }, repaymentStatus: { not: 'REVERSED' } },
+                        where: { product: { providerId: providerId }, ...borrowerFilter, repaymentStatus: { not: 'REVERSED' } },
           }).then(results => results.length)
-        : await prisma.borrower.count();
+        : borrowerIds
+          ? await prisma.borrower.count({ where: { id: { in: borrowerIds } } })
+          : await prisma.borrower.count();
 
     const providersData = await prisma.loanProvider.findMany({
         where: providerWhereClause,
@@ -55,7 +68,7 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
     
     const totalStartingCapital = providersData.reduce((acc, p) => acc + p.startingCapital, 0);
 
-    const portfolioLedger = await getPortfolioLedgerMetrics(prisma, providerId);
+    const portfolioLedger = await getPortfolioLedgerMetrics(prisma, providerId, borrowerIds);
     const { totalDisbursed, receivables, collections } = portfolioLedger;
     const providerFund = totalStartingCapital - totalDisbursed;
 
@@ -85,7 +98,8 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
                 lt: endOfTodayDate,
             },
             repaymentStatus: { not: 'REVERSED' },
-            ...(providerFilter && { product: providerFilter.product })
+            ...(providerFilter && { product: providerFilter.product }),
+            ...borrowerFilter,
         },
     });
 
@@ -96,7 +110,7 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
                 gte: startOfTodayDate,
                 lt: endOfTodayDate,
             },
-             ...(providerFilter && { loan: providerFilter })
+             ...((providerFilter.product || borrowerIds) && { loan: { ...providerFilter, ...borrowerFilter } })
         }
     });
 
@@ -112,7 +126,8 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
                         lt: nextDate,
                     },
                     repaymentStatus: { not: 'REVERSED' },
-                    ...(providerFilter && { product: providerFilter.product })
+                    ...(providerFilter && { product: providerFilter.product }),
+                    ...borrowerFilter,
                 },
             });
             return {
@@ -134,6 +149,7 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
     const recentActivity = await prisma.loan.findMany({
         where: {
             ...providerFilter,
+            ...borrowerFilter,
             repaymentStatus: { not: 'REVERSED' },
         },
         take: 5,
@@ -174,9 +190,9 @@ async function getProviderData(providerId?: string): Promise<DashboardData> {
     });
 
     const productOverview = await Promise.all(allProducts.map(async p => {
-        const active = await prisma.loan.count({ where: { productId: p.id, repaymentStatus: 'Unpaid' } });
-        const defaulted = await prisma.loan.count({ where: { productId: p.id, repaymentStatus: 'Unpaid', dueDate: { lt: new Date() } } });
-        const total = await prisma.loan.count({ where: { productId: p.id, repaymentStatus: { not: 'REVERSED' } } });
+        const active = await prisma.loan.count({ where: { productId: p.id, ...borrowerFilter, repaymentStatus: 'Unpaid' } });
+        const defaulted = await prisma.loan.count({ where: { productId: p.id, ...borrowerFilter, repaymentStatus: 'Unpaid', dueDate: { lt: new Date() } } });
+        const total = await prisma.loan.count({ where: { productId: p.id, ...borrowerFilter, repaymentStatus: { not: 'REVERSED' } } });
         return {
             name: p.name,
             provider: p.provider.name,
@@ -218,6 +234,7 @@ export async function getDashboardData(userId: string): Promise<{
             id: true,
             roleId: true,
             loanProviderId: true,
+            districtCode: true,
             role: {
                 select: {
                     id: true,
@@ -237,7 +254,15 @@ export async function getDashboardData(userId: string): Promise<{
     });
 
     const isSuperAdminOrAdmin = user?.role?.name === 'Super Admin' || user?.role?.name === 'Admin';
-    
+
+    // District users get every figure computed over their own farmers only.
+    const districtCode = getDistrictCodeFromUser({
+        role: user?.role?.name,
+        districtCode: user?.districtCode,
+    });
+    const districtBorrowerIds = await resolveDistrictBorrowerIds(districtCode);
+
+
     // For non-admins, get their specific provider or an empty array
     const providers = isSuperAdminOrAdmin
         ? await prisma.loanProvider.findMany({
@@ -251,12 +276,12 @@ export async function getDashboardData(userId: string): Promise<{
         })
         : (user?.loanProvider ? [user.loanProvider] : []);
 
-    const overallData = await getProviderData(isSuperAdminOrAdmin ? undefined : user?.loanProvider?.id);
-    
+    const overallData = await getProviderData(isSuperAdminOrAdmin ? undefined : user?.loanProvider?.id, districtBorrowerIds);
+
     let providerSpecificData: Record<string, DashboardData> = {};
 
     if (isSuperAdminOrAdmin) {
-         const specificDataPromises = providers.map(p => getProviderData(p.id));
+         const specificDataPromises = providers.map(p => getProviderData(p.id, districtBorrowerIds));
          const results = await Promise.all(specificDataPromises);
          results.forEach((data, index) => {
              providerSpecificData[providers[index].id] = data;

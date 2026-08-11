@@ -8,6 +8,11 @@ import {
   getBranchCodeFromUser,
   resolveBranchBorrowerIds,
 } from "@/lib/branch-filter";
+import {
+  applyDistrictFilterToNestedLoan,
+  getDistrictCodeFromUser,
+  resolveDistrictBorrowerIds,
+} from "@/lib/district-filter";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
@@ -250,6 +255,15 @@ export async function GET(request: NextRequest) {
     }
     if (branchBorrowerIds) {
       applyBranchFilterToNestedLoan(whereAny, branchBorrowerIds);
+    }
+
+    const districtCode = getDistrictCodeFromUser(user);
+    const districtBorrowerIds = await resolveDistrictBorrowerIds(districtCode);
+    if (districtCode != null && districtBorrowerIds?.length === 0) {
+      return NextResponse.json({ data: [], total: 0, page: 1, pageSize, totalPages: 0 });
+    }
+    if (districtBorrowerIds) {
+      applyDistrictFilterToNestedLoan(whereAny, districtBorrowerIds);
     }
 
     // For disbursement type filters, calculate total and apply pagination on loanIds

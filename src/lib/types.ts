@@ -250,6 +250,7 @@ export type UserRole =
   | "Reconciliation"
   | "Application Reviewer"
   | "Branch"
+  | "District"
   | "Approver";
 export type UserStatus = "Active" | "Inactive";
 
@@ -265,6 +266,8 @@ export interface User {
   providerName?: string;
   branchCode?: number | null;
   branchName?: string;
+  districtCode?: number | null;
+  districtName?: string;
   permissions: Permissions;
 }
 

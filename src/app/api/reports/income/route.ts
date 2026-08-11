@@ -9,6 +9,11 @@ import {
   getBranchCodeFromUser,
   resolveBranchBorrowerIds,
 } from '@/lib/branch-filter';
+import {
+  applyDistrictFilterToNestedLoan,
+  getDistrictCodeFromUser,
+  resolveDistrictBorrowerIds,
+} from '@/lib/district-filter';
 
 const getDates = (timeframe: string, from?: string, to?: string) => {
     if (from && to) {
@@ -56,7 +61,8 @@ const getDates = (timeframe: string, from?: string, to?: string) => {
 async function getIncomeData(
     providerIdFilter: any,
     dateFilter: any,
-    branchBorrowerIds?: string[] | null
+    branchBorrowerIds?: string[] | null,
+    districtBorrowerIds?: string[] | null
 ) {
     const journalEntry: Record<string, unknown> = {
         ...providerIdFilter.journalEntry,
@@ -64,6 +70,10 @@ async function getIncomeData(
     };
     if (branchBorrowerIds) {
         applyBranchFilterToNestedLoan(journalEntry, branchBorrowerIds);
+    }
+    // Intersects with any branch scope already applied above.
+    if (districtBorrowerIds) {
+        applyDistrictFilterToNestedLoan(journalEntry, districtBorrowerIds);
     }
 
     const whereClause: any = {
@@ -138,6 +148,12 @@ export async function GET(req: NextRequest) {
         return NextResponse.json([]);
     }
 
+    const districtCode = getDistrictCodeFromUser(user);
+    const districtBorrowerIds = await resolveDistrictBorrowerIds(districtCode);
+    if (districtCode != null && districtBorrowerIds?.length === 0) {
+        return NextResponse.json([]);
+    }
+
     try {
         let providersToQuery;
         // Users with loanProviderId are restricted to their own provider
@@ -162,7 +178,7 @@ export async function GET(req: NextRequest) {
                 }
             };
             
-            const income = await getIncomeData(providerIdFilter, dateFilter, branchBorrowerIds);
+            const income = await getIncomeData(providerIdFilter, dateFilter, branchBorrowerIds, districtBorrowerIds);
             reportData.push({
                 provider: provider.name,
                 ...income

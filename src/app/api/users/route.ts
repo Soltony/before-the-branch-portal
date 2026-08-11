@@ -11,6 +11,7 @@ import { createAuditLog } from '@/lib/audit-log';
 import { getUserFromSession } from '@/lib/user';
 import { revokeAllUserSessions } from '@/lib/session';
 import { branchIdToCode, getBranchLabel } from '@/lib/branches';
+import { districtIdToCode, getDistrictLabel, isValidDistrictCode } from '@/lib/districts';
 
 const userSchema = z.object({
   fullName: z.string().min(1, 'Full name is required'),
@@ -22,6 +23,8 @@ const userSchema = z.object({
   providerId: z.string().nullable().optional(),
   branchId: z.string().nullable().optional(),
   branchCode: z.number().int().positive().nullable().optional(),
+  districtId: z.string().nullable().optional(),
+  districtCode: z.number().int().positive().nullable().optional(),
   status: z.enum(['Active', 'Inactive']),
 });
 
@@ -34,6 +37,25 @@ function resolveBranchCode(
   if (branchCode != null) return branchCode;
   if (branchId) return branchIdToCode(branchId);
   return null;
+}
+
+/** District users are pinned to exactly one district; every other role gets null. */
+function resolveDistrictCode(
+  roleName: string,
+  districtId?: string | null,
+  districtCode?: number | null
+): number | null {
+  if (roleName !== 'District') return null;
+
+  const code =
+    districtCode != null
+      ? districtCode
+      : districtId
+        ? districtIdToCode(districtId)
+        : null;
+
+  if (code == null || !Number.isInteger(code) || !isValidDistrictCode(code)) return null;
+  return code;
 }
 
 export async function GET() {
@@ -74,6 +96,8 @@ export async function GET() {
       providerId: user.loanProvider?.id,
       branchCode: user.branchCode,
       branchName: user.branchCode != null ? getBranchLabel(user.branchCode) : undefined,
+      districtCode: user.districtCode,
+      districtName: user.districtCode != null ? getDistrictLabel(user.districtCode) : undefined,
       status: user.status,
     }));
 
@@ -104,10 +128,14 @@ export async function POST(req: NextRequest) {
   try {
 
     const body = await req.json();
-    const { password, role: roleName, providerId, branchId, branchCode: branchCodeInput, ...userData } = userSchema.parse(body);
+    const { password, role: roleName, providerId, branchId, branchCode: branchCodeInput, districtId, districtCode: districtCodeInput, ...userData } = userSchema.parse(body);
     const branchCode = resolveBranchCode(roleName, branchId, branchCodeInput);
     if (roleName === 'Branch' && branchCode == null) {
       return NextResponse.json({ error: 'Branch selection is required for Branch role users.' }, { status: 400 });
+    }
+    const districtCode = resolveDistrictCode(roleName, districtId, districtCodeInput);
+    if (roleName === 'District' && districtCode == null) {
+      return NextResponse.json({ error: 'A valid district selection is required for District role users.' }, { status: 400 });
     }
     // Validate password with the stronger shared password rules (includes breach check)
     try {
@@ -163,6 +191,7 @@ export async function POST(req: NextRequest) {
         passwordChangeRequired: true, // Force password change on first login
         roleId: role.id,
         branchCode,
+        districtCode,
     };
     
     // Only assign providerId if the creator is allowed to and the role requires it
@@ -205,6 +234,8 @@ export async function POST(req: NextRequest) {
         providerId: createdUser.loanProvider?.id,
         branchCode: createdUser.branchCode,
         branchName: createdUser.branchCode != null ? getBranchLabel(createdUser.branchCode) : undefined,
+        districtCode: createdUser.districtCode,
+        districtName: createdUser.districtCode != null ? getDistrictLabel(createdUser.districtCode) : undefined,
         status: createdUser.status,
         passwordChangeRequired: createdUser.passwordChangeRequired,
       },
@@ -233,7 +264,7 @@ export async function PUT(req: NextRequest) {
   try {
 
     const body = await req.json();
-    const { id, role: roleName, providerId, branchId, branchCode: branchCodeInput, password, ...userData } = body;
+    const { id, role: roleName, providerId, branchId, branchCode: branchCodeInput, districtId, districtCode: districtCodeInput, password, ...userData } = body;
 
     if (!id) {
         throw new Error('User ID is required for an update.');
@@ -287,6 +318,16 @@ export async function PUT(req: NextRequest) {
       dataToUpdate.branchCode = resolvedBranchCode;
     } else {
       dataToUpdate.branchCode = null;
+    }
+
+    if (role.name === 'District') {
+      const resolvedDistrictCode = resolveDistrictCode(role.name, districtId, districtCodeInput);
+      if (resolvedDistrictCode == null) {
+        return NextResponse.json({ error: 'A valid district selection is required for District role users.' }, { status: 400 });
+      }
+      dataToUpdate.districtCode = resolvedDistrictCode;
+    } else {
+      dataToUpdate.districtCode = null;
     }
     }
     
@@ -362,6 +403,8 @@ export async function PUT(req: NextRequest) {
       providerId: updatedUserFull.loanProvider?.id,
       branchCode: updatedUserFull.branchCode,
       branchName: updatedUserFull.branchCode != null ? getBranchLabel(updatedUserFull.branchCode) : undefined,
+      districtCode: updatedUserFull.districtCode,
+      districtName: updatedUserFull.districtCode != null ? getDistrictLabel(updatedUserFull.districtCode) : undefined,
       status: updatedUserFull.status,
       passwordChangeRequired: updatedUserFull.passwordChangeRequired,
     });

@@ -6,6 +6,7 @@ import { calculateTotalRepayable } from '@/lib/loan-calculator';
 import type { Loan, LoanProduct, Payment, ProvisionedData } from '@prisma/client';
 import { getUserFromSession } from '@/lib/user';
 import { applyBranchFilterToLoanWhere, getBranchCodeFromUser } from '@/lib/branch-filter';
+import { applyDistrictFilterToLoanWhere, getDistrictCodeFromUser } from '@/lib/district-filter';
 
 const getDates = (timeframe: string, from?: string, to?: string) => {
     if (from && to) {
@@ -160,6 +161,12 @@ export async function GET(req: NextRequest) {
 
     const branchOk = await applyBranchFilterToLoanWhere(whereClause, branchCode);
     if (!branchOk) {
+        return NextResponse.json({ data: [], total: 0, page: 1, pageSize, totalPages: 0 });
+    }
+
+    const districtCode = getDistrictCodeFromUser(user);
+    const districtOk = await applyDistrictFilterToLoanWhere(whereClause, districtCode);
+    if (!districtOk) {
         return NextResponse.json({ data: [], total: 0, page: 1, pageSize, totalPages: 0 });
     }
 

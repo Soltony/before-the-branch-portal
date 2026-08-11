@@ -274,7 +274,7 @@ function UsersTab() {
                                 <TableHead>Full Name</TableHead>
                                 <TableHead>Email</TableHead>
                                 <TableHead>Role</TableHead>
-                                <TableHead>Provider / Branch</TableHead>
+                                <TableHead>Provider / Branch / District</TableHead>
                                 <TableHead>Status</TableHead>
                                 <TableHead>Actions</TableHead>
                             </TableRow>
@@ -292,7 +292,9 @@ function UsersTab() {
                                     <TableCell>
                                       {user.role === 'Branch'
                                         ? (user.branchName || `Branch ${user.branchCode ?? ''}`)
-                                        : user.providerName}
+                                        : user.role === 'District'
+                                          ? (user.districtName || `District ${user.districtCode ?? ''}`)
+                                          : user.providerName}
                                     </TableCell>
                                     <TableCell>
                                         <Badge variant={user.status === 'Active' ? 'secondary' : 'destructive'} style={user.status === 'Active' ? { backgroundColor: '#16a34a', color: 'white' } : {}}>

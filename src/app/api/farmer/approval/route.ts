@@ -6,6 +6,8 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { isFarmerPendingApproval } from "@/lib/lersha/farmer-status";
 import { verifyFarmerAccountSelection } from "@/lib/lersha/farmer-accounts";
+import { getUserFromSession } from "@/lib/user";
+import { getDistrictCodeFromUser } from "@/lib/district-filter";
 
 /**
  * Admin approval endpoint for farmers.
@@ -60,6 +62,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Farmer not found." },
         { status: 404 },
+      );
+    }
+
+    // A District user approves only their own district's farmers.
+    const actingUser = await getUserFromSession();
+    const actingDistrictCode = getDistrictCodeFromUser(actingUser ?? {});
+    if (actingDistrictCode != null && farmer.districtCode !== actingDistrictCode) {
+      console.warn("[farmer/approval] Cross-district decision blocked:", {
+        farmer_id,
+        farmerDistrictCode: farmer.districtCode,
+        actingDistrictCode,
+      });
+      return NextResponse.json(
+        { error: "This farmer belongs to another district." },
+        { status: 403 },
       );
     }
 

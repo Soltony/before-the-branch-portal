@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { LANGUAGE_CODES } from "./contract-languages";
+import { normalizeDistrictCode } from "../districts";
 
 // ============================================================
 // Zod schemas for incoming requests (APIs we expose for Lersha)
@@ -28,6 +29,20 @@ const loanPurposeItemSchema = z.object({
   Insurance: insuranceSchema.optional(),
 });
 
+/**
+ * The district a farmer is registered under. Lersha sends it either as the
+ * padded id ("07") or the plain number (7), and the key has varied across
+ * their client versions, so every alias below is accepted and folded into
+ * `districtCode`. Absent is allowed — farmers registered before Lersha shipped
+ * the field simply have no district — but a value that is not a known district
+ * is rejected rather than dropped, since silently storing null would hide the
+ * farmer from every District user.
+ */
+const districtCodeInput = z
+  .union([z.string(), z.number()])
+  .nullish()
+  .transform((v) => (typeof v === "string" && v.trim() === "" ? null : v));
+
 export const sendFarmerDetailSchema = z.object({
   farmerId: z.string().min(1),
   farmerName: z.string().min(1),
@@ -51,8 +66,26 @@ export const sendFarmerDetailSchema = z.object({
   status: z.string().default("PENDING"),
   marriageCertificateUrl: z.string().url().optional().nullable(),
   address: z.string().min(1),
+  districtCode: districtCodeInput,
+  district_code: districtCodeInput,
+  districtId: districtCodeInput,
+  district: districtCodeInput,
   loanPurposes: z.array(loanPurposeItemSchema).min(1),
-});
+})
+  .transform(({ district_code, districtId, district, ...farmer }, ctx) => {
+    const raw = farmer.districtCode ?? district_code ?? districtId ?? district ?? null;
+    const districtCode = normalizeDistrictCode(raw);
+
+    if (raw != null && districtCode === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["districtCode"],
+        message: `Unknown district code "${raw}". Expected one of 01-20.`,
+      });
+    }
+
+    return { ...farmer, districtCode };
+  });
 
 /** Lersha sends an array of farmer details */
 export const sendFarmerDetailArraySchema = z.array(sendFarmerDetailSchema).min(1);

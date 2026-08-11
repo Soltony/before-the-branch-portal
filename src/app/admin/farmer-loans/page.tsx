@@ -69,6 +69,7 @@ import {
 } from '@/lib/lersha/farmer-status';
 import { deriveLoanRequestDisplayStatus } from '@/lib/lersha/farmer-purpose-status';
 import { FarmerAccountPicker } from '@/components/admin/farmer-account-picker';
+import { getDistrictLabel } from '@/lib/districts';
 
 // ── Types ──────────────────────────────────────────
 
@@ -110,6 +111,7 @@ interface Farmer {
   farmerId: string;
   farmerName: string;
   phoneNumber: string;
+  districtCode: number | null;
   primaryCropType: string;
   totalFarmSizeInHectare: number;
   cultivatedAreaInHectare: number;
@@ -412,6 +414,7 @@ export default function FarmerLoansPage() {
                   <TableHead>Farmer ID</TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Phone</TableHead>
+                  <TableHead>District</TableHead>
                   <TableHead>Crop</TableHead>
                   <TableHead className="text-right">Loan Amount</TableHead>
                   <TableHead>Credit Score</TableHead>
@@ -426,7 +429,7 @@ export default function FarmerLoansPage() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={12} className="h-24 text-center">
+                    <TableCell colSpan={13} className="h-24 text-center">
                       <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                     </TableCell>
                   </TableRow>
@@ -461,6 +464,7 @@ export default function FarmerLoansPage() {
                           </div>
                         </TableCell>
                         <TableCell>{farmer.phoneNumber}</TableCell>
+                        <TableCell>{getDistrictLabel(farmer.districtCode)}</TableCell>
                         <TableCell>{farmer.primaryCropType}</TableCell>
                         <TableCell className="text-right font-mono">
                           {formatCurrency(farmer.requestedLoanAmount)}
@@ -565,7 +569,7 @@ export default function FarmerLoansPage() {
                   })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={12} className="h-24 text-center">
+                    <TableCell colSpan={13} className="h-24 text-center">
                       No farmers found.
                     </TableCell>
                   </TableRow>

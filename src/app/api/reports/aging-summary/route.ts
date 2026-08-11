@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma';
 import { differenceInDays } from 'date-fns';
 import { getUserFromSession } from '@/lib/user';
 import { applyBranchFilterToLoanWhere, getBranchCodeFromUser } from '@/lib/branch-filter';
+import { applyDistrictFilterToLoanWhere, getDistrictCodeFromUser } from '@/lib/district-filter';
 
 // Aging buckets
 const BUCKETS = [
@@ -45,6 +46,12 @@ export async function GET(req: NextRequest) {
   };
   const branchOk = await applyBranchFilterToLoanWhere(loanWhere, branchCode);
   if (!branchOk) {
+    return NextResponse.json({ byBorrower: [], byProvider: [] });
+  }
+
+  const districtCode = getDistrictCodeFromUser(user);
+  const districtOk = await applyDistrictFilterToLoanWhere(loanWhere, districtCode);
+  if (!districtOk) {
     return NextResponse.json({ byBorrower: [], byProvider: [] });
   }
 

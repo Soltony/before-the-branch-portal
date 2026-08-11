@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { User, UserRole, UserStatus, Role, LoanProvider } from '@/lib/types';
 import { BRANCHES, branchCodeToId } from '@/lib/branches';
+import { DISTRICTS, districtCodeToId } from '@/lib/districts';
 
 interface AddUserDialogProps {
   isOpen: boolean;
@@ -38,9 +39,11 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
     status: 'Active' as UserStatus,
     providerId: '' as string | null,
     branchId: '' as string | null,
+    districtId: '' as string | null,
   });
   const [branchSearch, setBranchSearch] = useState('');
   const [branchError, setBranchError] = useState<string | null>(null);
+  const [districtError, setDistrictError] = useState<string | null>(null);
 
   const [pwChecks, setPwChecks] = useState({
     length: false,
@@ -81,6 +84,7 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
         status: user.status,
         providerId: user.providerId || null,
         branchId: user.branchCode != null ? branchCodeToId(user.branchCode) : null,
+        districtId: user.districtCode != null ? districtCodeToId(user.districtCode) : null,
       });
     } else {
       setFormData({
@@ -92,6 +96,7 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
         status: 'Active' as UserStatus,
         providerId: providers.length > 0 ? providers[0].id : null,
         branchId: null,
+        districtId: null,
       });
     }
 
@@ -99,6 +104,8 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
     setPhoneTouched(false);
     setPhoneError(null);
     setBranchSearch('');
+    setBranchError(null);
+    setDistrictError(null);
   }, [user, isOpen, providers, roles]);
 
   // Validate password client-side and run debounced pwned-password check
@@ -180,7 +187,7 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
     setFormData((prev) => ({ ...prev, [id]: value }));
   };
 
-  const handleSelectChange = (field: 'role' | 'status' | 'providerId' | 'branchId') => (value: string) => {
+  const handleSelectChange = (field: 'role' | 'status' | 'providerId' | 'branchId' | 'districtId') => (value: string) => {
     const newRole = field === 'role' ? (value as UserRole) : formData.role;
     const isProviderSpecificRole = newRole === 'Loan Provider' || newRole === 'Loan Manager';
     
@@ -195,6 +202,9 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
             }
             if (newRole !== 'Branch') {
                 updatedState.branchId = null;
+            }
+            if (newRole !== 'District') {
+                updatedState.districtId = null;
             }
         }
         
@@ -259,12 +269,24 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
     }
     setBranchError(null);
 
+    if (submissionData.role === 'District') {
+      if (!submissionData.districtId) {
+        setDistrictError('Please select a district for District role users.');
+        return;
+      }
+      submissionData.providerId = null;
+    } else {
+      delete submissionData.districtId;
+    }
+    setDistrictError(null);
+
     onSave(submissionData);
     onClose();
   };
   
   const isProviderRole = formData.role === 'Loan Provider' || formData.role === 'Loan Manager';
   const isBranchRole = formData.role === 'Branch';
+  const isDistrictRole = formData.role === 'District';
 
   const filteredBranches = useMemo(() => {
     const q = branchSearch.trim().toLowerCase();
@@ -438,6 +460,33 @@ export function AddUserDialog({ isOpen, onClose, onSave, user, roles, providers,
                 <div className="grid grid-cols-4 items-center gap-4">
                   <div />
                   <div className="col-span-3 text-sm text-destructive">{branchError}</div>
+                </div>
+              )}
+            </>
+          )}
+          {isDistrictRole && (
+            <>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="districtId" className="text-right">
+                  District
+                </Label>
+                <Select onValueChange={handleSelectChange('districtId')} value={formData.districtId || ''}>
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Select a district" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {DISTRICTS.map((district) => (
+                      <SelectItem key={district.id} value={district.id}>
+                        {district.id} - {district.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {districtError && (
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <div />
+                  <div className="col-span-3 text-sm text-destructive">{districtError}</div>
                 </div>
               )}
             </>

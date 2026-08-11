@@ -4,6 +4,8 @@ import { sendLoanDecision } from "@/lib/lersha/client";
 import { createAuditLog } from "@/lib/audit-log";
 import logger from "@/lib/logger";
 import { z } from "zod";
+import { getUserFromSession } from "@/lib/user";
+import { getDistrictCodeFromUser } from "@/lib/district-filter";
 
 export async function GET(req: NextRequest) {
   try {
@@ -14,6 +16,22 @@ export async function GET(req: NextRequest) {
     const status = searchParams.get("status")?.trim() || "";
 
     const where: any = {};
+
+    // A session is required: district scoping below is derived from it, so an
+    // anonymous caller would otherwise read every district's farmers. Only the
+    // admin UI calls this route.
+    const user = await getUserFromSession();
+    if (!user?.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    // District users only ever see the farmers Lersha registered under their
+    // district. Applied on the query rather than after paging, so counts and
+    // page totals stay consistent with what is returned.
+    const districtCode = getDistrictCodeFromUser(user);
+    if (districtCode != null) {
+      where.districtCode = districtCode;
+    }
 
     if (status) {
       where.status = status;
@@ -118,6 +136,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Loan request not found." },
         { status: 404 },
+      );
+    }
+
+    // A District user decides only on their own district's farmers.
+    const user = await getUserFromSession();
+    const districtCode = getDistrictCodeFromUser(user ?? {});
+    if (districtCode != null && loanRequest.farmer.districtCode !== districtCode) {
+      return NextResponse.json(
+        { error: "This loan request belongs to another district." },
+        { status: 403 },
       );
     }
 

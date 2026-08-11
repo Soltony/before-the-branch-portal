@@ -9,12 +9,21 @@ import {
   computePendingUpdate,
   loanPurposeMatchKey,
 } from "@/lib/lersha/farmer-update-diff";
+import { getUserFromSession } from "@/lib/user";
+import { getDistrictCodeFromUser } from "@/lib/district-filter";
 
 type RouteParams = { params: Promise<{ farmerId: string }> };
 
 export async function GET(_req: NextRequest, { params }: RouteParams) {
   try {
     const { farmerId } = await params;
+
+    // Required for the district check below; without it an anonymous caller
+    // could read any district's farmer detail.
+    const user = await getUserFromSession();
+    if (!user?.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
 
     const farmer = await prisma.lershaFarmer.findFirst({
       where: {
@@ -27,6 +36,13 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
     });
 
     if (!farmer) {
+      return NextResponse.json({ error: "Farmer not found." }, { status: 404 });
+    }
+
+    // Out-of-district farmers read as non-existent rather than forbidden, so a
+    // District user cannot probe which farmer ids exist elsewhere.
+    const districtCode = getDistrictCodeFromUser(user);
+    if (districtCode != null && farmer.districtCode !== districtCode) {
       return NextResponse.json({ error: "Farmer not found." }, { status: 404 });
     }
 

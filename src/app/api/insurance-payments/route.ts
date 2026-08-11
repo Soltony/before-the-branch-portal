@@ -12,6 +12,10 @@ import {
 } from "@/lib/lersha/insurance";
 import { sendInsuranceConfirmation } from "@/lib/lersha/client";
 import type { InsuranceConfirmationRequest } from "@/lib/lersha/types";
+import {
+  getDistrictCodeFromUser,
+  getFarmerIdsForDistrictCode,
+} from "@/lib/district-filter";
 
 const MODULE = "insurance-payments";
 
@@ -44,6 +48,15 @@ export async function GET(req: NextRequest) {
     // search to internal ids first.
     const where: any = {};
     if (status) where.status = status;
+
+    // District users see only payments for their own district's farmers.
+    // `LershaInsurancePayment.farmerId` holds the internal LershaFarmer.id, so
+    // resolve the district to those ids. ANDs with the search OR below.
+    const districtCode = getDistrictCodeFromUser(auth.user ?? {});
+    if (districtCode != null) {
+      where.farmerId = { in: await getFarmerIdsForDistrictCode(districtCode) };
+    }
+
     if (search) {
       const matchingFarmers = await prisma.lershaFarmer.findMany({
         where: {
@@ -248,6 +261,25 @@ export async function POST(req: NextRequest) {
 
     const { paymentIds, action, rejectionReason } = parsed.data;
     const uniqueIds = Array.from(new Set(paymentIds));
+
+    // A District user acts only on their own district's payments. Checked for
+    // the whole batch up front so a mixed batch is refused outright rather than
+    // approving part of it before hitting a foreign row.
+    const districtCode = getDistrictCodeFromUser(user);
+    if (districtCode != null) {
+      const inDistrict = await prisma.lershaInsurancePayment.count({
+        where: {
+          id: { in: uniqueIds },
+          farmer: { districtCode },
+        },
+      });
+      if (inDistrict !== uniqueIds.length) {
+        return NextResponse.json(
+          { error: "One or more payments belong to another district." },
+          { status: 403 },
+        );
+      }
+    }
 
     if (action === "REJECT") {
       return await handleReject(uniqueIds, rejectionReason, user.id);

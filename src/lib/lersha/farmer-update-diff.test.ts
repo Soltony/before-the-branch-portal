@@ -31,6 +31,7 @@ const baseFarmer: FarmerProfileLike = {
   emergencyContactPhone: "+251911000002",
   emergencyContactRelationship: "Spouse",
   emergencyContactAddress: "Addis Ababa, Bole Sub City",
+  districtCode: 7,
 };
 
 const seedPurpose: PurposeSnapshot = {

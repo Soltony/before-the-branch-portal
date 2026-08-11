@@ -9,6 +9,9 @@ const LERSHA_BASE_URL =
   process.env.LERSHA_API_BASE_URL ||
   "https://dev-api-integration.lersha.com/api/v1";
 
+/** Shared secret issued by Lersha; sent on every outbound call. */
+const LERSHA_API_KEY = process.env.LERSHA_API_KEY || "";
+
 /**
  * Low-level helper to call Lersha endpoints.
  */
@@ -20,9 +23,21 @@ async function lershaFetch<T = unknown>(
   logger.info(`[Lersha] POST ${url}`);
   console.log(`[Lersha] Outgoing request to ${url}:`, body);
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (LERSHA_API_KEY) {
+    headers["X-API-Key"] = LERSHA_API_KEY;
+  } else {
+    // Lersha rejects unauthenticated calls, so surface the misconfiguration
+    // rather than letting it show up as an opaque 401/403 later.
+    logger.warn(`[Lersha] LERSHA_API_KEY is not set; calling ${url} without it`);
+    console.warn("[Lersha] LERSHA_API_KEY is not set; sending request without X-API-Key");
+  }
+
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
 

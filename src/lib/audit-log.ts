@@ -19,7 +19,32 @@ type ExternalApiAuditBase = {
     entity?: string;
     entityId?: string;
     correlationId?: string;
+    /**
+     * What the call was made for (e.g. { loanId }). The request/response bodies
+     * are whatever the upstream contract dictates and often carry no identifier
+     * of ours, so without this an entry cannot be tied back to the record that
+     * triggered it.
+     */
+    context?: Record<string, unknown>;
 };
+
+export type AuditRequestContext = {
+    ipAddress: string;
+    userAgent: string;
+};
+
+/**
+ * Where a request came from, for the ipAddress/userAgent columns of an audit
+ * entry. For a signed-in user this is their browser; for a server-to-server
+ * caller such as Lersha it is the calling host, which is the only evidence of
+ * who actually sent a request made with a shared API key.
+ */
+export function getAuditRequestContext(req: { headers: Headers }): AuditRequestContext {
+    return {
+        ipAddress: req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'N/A',
+        userAgent: req.headers.get('user-agent') || 'N/A',
+    };
+}
 
 type ExternalApiRequestDetails = {
     method: string;
@@ -142,6 +167,7 @@ export async function auditExternalApiRequest(base: ExternalApiAuditBase, req: E
         details: sanitizeForAudit({
             correlationId,
             integration: base.integration,
+            context: base.context,
             request: {
                 method: req.method,
                 url: sanitizeUrl(req.url),
@@ -166,6 +192,7 @@ export async function auditExternalApiResponse(base: ExternalApiAuditBase, res: 
         details: sanitizeForAudit({
             correlationId,
             integration: base.integration,
+            context: base.context,
             response: {
                 status: res.status,
                 statusText: res.statusText,
@@ -192,6 +219,7 @@ export async function auditExternalApiError(base: ExternalApiAuditBase, error: u
         details: sanitizeForAudit({
             correlationId,
             integration: base.integration,
+            context: base.context,
             error: {
                 message,
                 name: error instanceof Error ? error.name : undefined,

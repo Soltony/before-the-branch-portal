@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, type AuditRequestContext } from "@/lib/audit-log";
 import { resolveAgricultureProduct } from "@/lib/lersha/disbursement";
 import logger from "@/lib/logger";
 import {
@@ -109,7 +109,50 @@ export async function getFarmerRemainingBalance(
 export async function processInsurancePayment(
   insurancePaymentId: string,
   actorId: string,
+  requestContext: Partial<AuditRequestContext> = {},
 ): Promise<InsurancePaymentOutcome> {
+  const outcome = await bookInsurancePayment(
+    insurancePaymentId,
+    actorId,
+    requestContext,
+  );
+
+  // An approval that does not go through leaves the payment REQUESTED with
+  // nothing else to show for it, so record who tried and why it failed. Done
+  // here, around the booking, so every way of failing is covered — including
+  // ones added later. (A successful booking writes LERSHA_INSURANCE_APPROVED
+  // itself; an already-processed payment is a no-op and is not recorded again.)
+  if (!outcome.ok) {
+    await createAuditLog({
+      actorId,
+      action: "LERSHA_INSURANCE_APPROVAL_FAILED",
+      entity: "LershaInsurancePayment",
+      entityId: insurancePaymentId,
+      details: {
+        farmerId: outcome.externalFarmerId || null,
+        reason: outcome.error ?? outcome.message,
+        message: outcome.message,
+        // Soft errors leave the payment approvable once the cause is fixed.
+        retryable: outcome.softError ?? false,
+        // Set only if the failure came after the loan was booked.
+        bookedLoanId: outcome.loanId ?? null,
+      },
+      ...requestContext,
+    });
+  }
+
+  return outcome;
+}
+
+async function bookInsurancePayment(
+  insurancePaymentId: string,
+  actorId: string,
+  requestContext: Partial<AuditRequestContext>,
+): Promise<InsurancePaymentOutcome> {
+  // Set once the booking transaction commits, so a failure after that point is
+  // reported as having left a loan behind.
+  let bookedLoanId: string | undefined;
+
   try {
     const payment = await prisma.lershaInsurancePayment.findUnique({
       where: { id: insurancePaymentId },
@@ -578,8 +621,11 @@ export async function processInsurancePayment(
     // loan may be booked, and that gate is inside the transaction above. Once
     // the loan is committed the transfer has to follow, or the books and the
     // bank disagree.
+    bookedLoanId = loan.id;
+
     let externalDisbursementAttempted = true;
     let externalDisbursementOk = false;
+    let externalDisbursementError: string | null = null;
     let upstreamTransactionId: string | null = null;
 
     {
@@ -590,8 +636,11 @@ export async function processInsurancePayment(
         amount: disbursementTransferAmount,
         loanId: loan.id,
         actorId,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
       });
       externalDisbursementOk = ext.ok;
+      externalDisbursementError = ext.error ?? null;
       upstreamTransactionId = ext.transactionId ?? null;
       if (!ext.ok) {
         logger.error(
@@ -605,6 +654,26 @@ export async function processInsurancePayment(
           providerId: provider.id,
           amount: disbursementTransferAmount,
           result: ext,
+        });
+        // The loan is booked but the money did not move. The summary entry
+        // below is still named LERSHA_INSURANCE_APPROVED, so give this its own
+        // action — it is the case someone most needs to be able to filter for.
+        await createAuditLog({
+          actorId,
+          action: "LERSHA_DISBURSEMENT_TRANSFER_FAILED",
+          entity: "LershaInsurancePayment",
+          entityId: payment.id,
+          details: {
+            kind: "INSURANCE",
+            farmerId: farmer.farmerId,
+            loanId: loan.id,
+            creditAccount,
+            insurerAccount: insurerAccount || null,
+            amount: disbursementTransferAmount,
+            statusCode: ext.statusCode,
+            error: ext.error ?? null,
+          },
+          ...requestContext,
         });
       }
     }
@@ -650,9 +719,17 @@ export async function processInsurancePayment(
           ? calculateAgroDealersAmount(disbursementTransferAmount)
           : null,
         transactionId,
+        // Null when the core returned no id and the internal INS- reference
+        // above was reported to Lersha instead.
+        upstreamTransactionId,
+        disbursementTransferAmount,
         externalDisbursementAttempted,
         externalDisbursementOk,
+        // Why the core refused, when it did. The loan stays booked either way,
+        // so this is what tells a reviewer the money has not actually moved.
+        externalDisbursementError,
       },
+      ...requestContext,
     });
 
     return {
@@ -696,6 +773,7 @@ export async function processInsurancePayment(
       ok: false,
       message: "Failed to process insurance payment",
       error: error?.message ?? String(error),
+      loanId: bookedLoanId,
     };
   }
 }

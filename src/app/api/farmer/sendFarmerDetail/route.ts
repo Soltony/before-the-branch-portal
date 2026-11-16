@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { LershaLoanPurpose } from "@prisma/client";
 import prisma from "@/lib/prisma";
 import { sendFarmerDetailArraySchema } from "@/lib/lersha/types";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import {
   farmerProfileData,
   syncLoanPurposes,
@@ -14,10 +15,33 @@ import {
 import {
   buildReviewBaseline,
   diffProfiles,
+  diffPurposes,
   toProfileSnapshot,
+  toPurposeSnapshot,
+  type FieldChange,
+  type PurposeChange,
 } from "@/lib/lersha/farmer-update-diff";
 
+/** Before/after of a changed field, without the display-only label and kind. */
+function auditFieldChange({ field, previous, current }: FieldChange) {
+  return { field, previous, current };
+}
+
+function auditPurposeChange({ label, totalCost, changes }: PurposeChange) {
+  return {
+    label,
+    totalCost,
+    ...(changes ? { changes: changes.map(auditFieldChange) } : {}),
+  };
+}
+
 export async function POST(req: NextRequest) {
+  const auditCtx = getAuditRequestContext(req);
+  // The farmer being processed when something throws, so a failure mid-batch
+  // can be told apart from the farmers already saved before it.
+  let currentFarmerId: string | null = null;
+  const processedFarmerIds: string[] = [];
+
   try {
     console.log("[sendFarmerDetail] Request received");
     const body = await req.json();
@@ -48,6 +72,7 @@ export async function POST(req: NextRequest) {
     }[] = [];
 
     for (const farmer of farmers) {
+      currentFarmerId = farmer.farmerId;
       console.log("[sendFarmerDetail] Processing farmer:", {
         farmerId: farmer.farmerId,
         farmerName: farmer.farmerName,
@@ -90,24 +115,33 @@ export async function POST(req: NextRequest) {
             currentStatus: existing.status,
             reason,
           },
+          ...auditCtx,
         });
+        processedFarmerIds.push(farmer.farmerId);
         continue;
       }
 
       const profile = farmerProfileData(farmer);
       let upserted;
       let updatedFields: string[] = [];
+      let profileChanges: FieldChange[] = [];
+      let purposesBefore: LershaLoanPurpose[] = [];
       if (existing) {
+        // Read on every update, not only when a baseline is missing: the audit
+        // entry below records what this update changed, and the review baseline
+        // is cleared once a reviewer decides — after which the audit log is the
+        // only place the before-values survive.
+        purposesBefore = await prisma.lershaLoanPurpose.findMany({
+          where: { farmerId: existing.id },
+          orderBy: { createdAt: "asc" },
+        });
+
         // Snapshot the record as it was before the first unreviewed update so
         // reviewers can see exactly what changed. Later updates keep the same
         // baseline, accumulating changes until a reviewer decides.
         let reviewBaseline = existing.reviewBaseline;
         if (!reviewBaseline) {
-          const existingPurposes = await prisma.lershaLoanPurpose.findMany({
-            where: { farmerId: existing.id },
-            orderBy: { createdAt: "asc" },
-          });
-          reviewBaseline = buildReviewBaseline(existing, existingPurposes);
+          reviewBaseline = buildReviewBaseline(existing, purposesBefore);
         }
 
         upserted = await prisma.lershaFarmer.update({
@@ -119,10 +153,11 @@ export async function POST(req: NextRequest) {
             reviewBaseline,
           },
         });
-        updatedFields = diffProfiles(
+        profileChanges = diffProfiles(
           toProfileSnapshot(existing),
           toProfileSnapshot(upserted),
-        ).map((c) => c.field);
+        );
+        updatedFields = profileChanges.map((c) => c.field);
       } else {
         upserted = await prisma.lershaFarmer.create({
           data: {
@@ -139,6 +174,31 @@ export async function POST(req: NextRequest) {
       );
 
       const operationStatus = existing ? "UPDATED" : "REGISTERED";
+
+      // What this call did to the loan purposes. They decide how much is lent
+      // and which agro-dealer account the money is forwarded to, so a change to
+      // them matters as much as a change to the profile itself.
+      let loanPurposeChanges: {
+        added: ReturnType<typeof auditPurposeChange>[];
+        removed: ReturnType<typeof auditPurposeChange>[];
+        modified: ReturnType<typeof auditPurposeChange>[];
+      } | null = null;
+      if (existing) {
+        const purposesAfter = await prisma.lershaLoanPurpose.findMany({
+          where: { farmerId: upserted.id },
+          orderBy: { createdAt: "asc" },
+        });
+        const diff = diffPurposes(
+          purposesBefore.map(toPurposeSnapshot),
+          purposesAfter.map(toPurposeSnapshot),
+        );
+        loanPurposeChanges = {
+          added: diff.added.map(auditPurposeChange),
+          removed: diff.removed.map(auditPurposeChange),
+          modified: diff.modified.map(auditPurposeChange),
+        };
+      }
+
       results.push({
         farmerId: farmer.farmerId,
         status: operationStatus,
@@ -161,9 +221,31 @@ export async function POST(req: NextRequest) {
           loanPurposeCount: loanPurposeResults.length,
           previousStatus: existing?.status ?? null,
           currentStatus: upserted.status,
-          updatedFields: operationStatus === "UPDATED" ? updatedFields : undefined,
+          requestedLoanAmount: upserted.requestedLoanAmount,
+          districtCode: upserted.districtCode,
+          ...(operationStatus === "UPDATED"
+            ? {
+                updatedFields,
+                changes: profileChanges.map(auditFieldChange),
+                loanPurposeChanges,
+              }
+            : {
+                // syncLoanPurposes returns one result per incoming purpose, in
+                // order, so the two arrays line up by index.
+                loanPurposes: farmer.loanPurposes.map((p, i) => ({
+                  productId: loanPurposeResults[i]?.productId ?? null,
+                  loanPurpose: p.loanPurpose,
+                  specificVarietyName: p.specificVarietyName ?? null,
+                  totalCost: p.totalCost,
+                  agroDealerName: p.agro_dealer?.agro_dealer_name ?? null,
+                  agroDealerAccountNo:
+                    p.agro_dealer?.agro_dealer_account_number ?? null,
+                })),
+              }),
         },
+        ...auditCtx,
       });
+      processedFarmerIds.push(farmer.farmerId);
 
       console.log("[sendFarmerDetail] Farmer processed:", {
         farmerId: farmer.farmerId,
@@ -192,6 +274,19 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: any) {
     console.error("[sendFarmerDetail] Error:", error);
+    // Farmers earlier in the batch are already saved (and audited); Lersha only
+    // sees a 500, so record where the batch stopped.
+    await createAuditLog({
+      actorId: "lersha-integration",
+      action: "LERSHA_FARMER_SYNC_FAILED",
+      entity: "LershaFarmer",
+      details: {
+        failedFarmerId: currentFarmerId,
+        processedFarmerIds,
+        error: error?.message ?? String(error),
+      },
+      ...auditCtx,
+    });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

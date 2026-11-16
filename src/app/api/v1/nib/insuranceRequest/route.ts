@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import { insuranceRequestSchema } from "@/lib/lersha/types";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import { syncInsuranceAccountsFromFarmers } from "@/lib/lersha/insurance-accounts";
 
 /**
@@ -16,6 +16,7 @@ import { syncInsuranceAccountsFromFarmers } from "@/lib/lersha/insurance-account
  * /api/v1/* Lersha integration endpoints).
  */
 export async function POST(req: NextRequest) {
+  const auditCtx = getAuditRequestContext(req);
   try {
     const body = await req.json().catch(() => null);
     const parsed = insuranceRequestSchema.safeParse(body);
@@ -73,7 +74,12 @@ export async function POST(req: NextRequest) {
     const batchId = randomUUID();
 
     const detailDTO: { farmerID: string; insuranceAmount: string }[] = [];
-    const recorded: { farmerId: string; paymentId: string }[] = [];
+    const recorded: {
+      farmerId: string;
+      paymentId: string;
+      insuranceName: string | null;
+      insuranceAmount: number;
+    }[] = [];
     const skipped: { farmerId: string; reason: string }[] = [];
     let duplicateCount = 0;
 
@@ -132,12 +138,31 @@ export async function POST(req: NextRequest) {
           },
         });
 
-        recorded.push({ farmerId: fid, paymentId: created.id });
+        recorded.push({
+          farmerId: fid,
+          paymentId: created.id,
+          insuranceName: purpose.insuranceName,
+          insuranceAmount: amount,
+        });
         detailDTO.push({ farmerID: fid, insuranceAmount: amount.toFixed(2) });
       }
     }
 
     if (recorded.length === 0) {
+      // Nothing was queued, so no payment row exists to show Lersha asked. Record
+      // the request and why each farmer was passed over.
+      await createAuditLog({
+        actorId: "lersha-integration",
+        action: "LERSHA_INSURANCE_REQUEST_NOT_RECORDED",
+        entity: "LershaInsurancePayment",
+        details: {
+          requested: uniqueIds.length,
+          duplicates: duplicateCount,
+          skipped,
+        },
+        ...auditCtx,
+      });
+
       // Already-queued duplicates → acknowledge as success (idempotent).
       if (duplicateCount > 0) {
         return NextResponse.json(
@@ -167,8 +192,12 @@ export async function POST(req: NextRequest) {
         recorded: recorded.length,
         duplicates: duplicateCount,
         skipped,
+        // Which payment row each farmer got, so a later approval or rejection
+        // (logged against the payment id) can be traced back to this request.
+        payments: recorded,
         nibPayload,
       },
+      ...auditCtx,
     });
 
     return NextResponse.json(
@@ -177,6 +206,15 @@ export async function POST(req: NextRequest) {
     );
   } catch (error) {
     console.error("[insuranceRequest] Error:", error);
+    // Payments created before the failure are kept, but Lersha is told the
+    // request failed — record that the two sides may now disagree.
+    await createAuditLog({
+      actorId: "lersha-integration",
+      action: "LERSHA_INSURANCE_REQUEST_FAILED",
+      entity: "LershaInsurancePayment",
+      details: { error: (error as Error)?.message ?? String(error) },
+      ...auditCtx,
+    });
     return NextResponse.json(
       { success: false, message: "Failed to fetch farmers" },
       { status: 500 },

@@ -40,6 +40,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { processInsurancePayment } from "@/lib/lersha/insurance";
+import { createAuditLog } from "@/lib/audit-log";
+
+const mockCreateAuditLog = vi.mocked(createAuditLog);
 
 const activeFarmer = {
   id: "farmer-internal-1",
@@ -147,5 +150,79 @@ describe("processInsurancePayment guards", () => {
     const r = await processInsurancePayment("p1", "actor-1");
     expect(r.message).not.toMatch(/no active insurance account/i);
     expect(r.message).not.toMatch(/no disbursement account selected/i);
+  });
+});
+
+/**
+ * A refused approval changes nothing on the payment, so the audit entry is the
+ * only record that someone tried and why it did not go through.
+ */
+describe("processInsurancePayment audit trail", () => {
+  it("records a failed approval with the approver, reason and request origin", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "p1",
+      status: "REQUESTED",
+      insuranceName: "NIB Insurance",
+      insuranceAmount: 1500,
+      farmer: { ...activeFarmer, disbursementAccountNo: null },
+      insuranceAccount: null,
+    });
+
+    await processInsurancePayment("p1", "actor-1", {
+      ipAddress: "10.0.0.7",
+      userAgent: "test-agent",
+    });
+
+    expect(mockCreateAuditLog).toHaveBeenCalledTimes(1);
+    const entry = mockCreateAuditLog.mock.calls[0][0];
+    expect(entry).toMatchObject({
+      actorId: "actor-1",
+      action: "LERSHA_INSURANCE_APPROVAL_FAILED",
+      entity: "LershaInsurancePayment",
+      entityId: "p1",
+      ipAddress: "10.0.0.7",
+      userAgent: "test-agent",
+    });
+    expect(entry.details).toMatchObject({
+      farmerId: "FARMER001",
+      retryable: true,
+      bookedLoanId: null,
+    });
+    expect(entry.details.reason).toMatch(/no disbursement account selected/i);
+  });
+
+  it("records a hard failure as not retryable", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "p1",
+      status: "REJECTED",
+      farmer: activeFarmer,
+      insuranceAccount: null,
+    });
+
+    await processInsurancePayment("p1", "actor-1");
+
+    const entry = mockCreateAuditLog.mock.calls[0][0];
+    expect(entry.action).toBe("LERSHA_INSURANCE_APPROVAL_FAILED");
+    expect(entry.details).toMatchObject({
+      reason: "INVALID_PAYMENT_STATUS",
+      retryable: false,
+    });
+  });
+
+  it("does not log an already-processed payment a second time", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "p1",
+      status: "SUCCESS",
+      loanId: "loan-1",
+      remainingBalance: 2500,
+      transactionId: "TXN1",
+      transactionAmount: 1500,
+      farmer: activeFarmer,
+      insuranceAccount: null,
+    });
+
+    await processInsurancePayment("p1", "actor-1");
+
+    expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 });

@@ -6,13 +6,17 @@ import { disbursementConfirmationPayloadSchema } from "@/lib/lersha/types";
 
 import { sendDisbursementConfirmation } from "@/lib/lersha/client";
 
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 
 import { autoDisburseFarmerLoan } from "@/lib/lersha/disbursement";
 
 
 
 export async function POST(req: NextRequest) {
+
+  const auditCtx = getAuditRequestContext(req);
+
+  let attemptedFarmerId: string | null = null;
 
   try {
 
@@ -44,6 +48,44 @@ export async function POST(req: NextRequest) {
 
     const { farmer_id, remaining_balance } = parsed.data;
 
+    attemptedFarmerId = farmer_id;
+
+    // This endpoint can trigger a disbursement, so a call that ends without one
+
+    // is recorded with its reason. (A disbursement that was attempted and
+
+    // refused is recorded by autoDisburseFarmerLoan itself.)
+
+    const auditFailed = (
+
+      reason: string,
+
+      target: { entity: string; entityId?: string },
+
+    ) =>
+
+      createAuditLog({
+
+        actorId: "lersha-integration",
+
+        action: "LERSHA_DISBURSEMENT_CONFIRMATION_FAILED",
+
+        ...target,
+
+        details: {
+
+          farmerId: farmer_id,
+
+          remainingBalance: remaining_balance,
+
+          reason,
+
+        },
+
+        ...auditCtx,
+
+      });
+
 
 
     const farmer = await prisma.lershaFarmer.findUnique({
@@ -53,6 +95,8 @@ export async function POST(req: NextRequest) {
     });
 
     if (!farmer) {
+
+      await auditFailed("FARMER_NOT_FOUND", { entity: "LershaFarmer" });
 
       return NextResponse.json(
 
@@ -84,6 +128,14 @@ export async function POST(req: NextRequest) {
 
     if (!loanRequest) {
 
+      await auditFailed("NO_ELIGIBLE_LOAN_REQUEST", {
+
+        entity: "LershaFarmer",
+
+        entityId: farmer.id,
+
+      });
+
       return NextResponse.json(
 
         { error: "No eligible loan request found for this farmer." },
@@ -104,7 +156,7 @@ export async function POST(req: NextRequest) {
 
     if (loanRequest.status === "OTP_VERIFIED") {
 
-      disbursementResult = await autoDisburseFarmerLoan(loanRequest.id);
+      disbursementResult = await autoDisburseFarmerLoan(loanRequest.id, auditCtx);
 
       if (!disbursementResult.success) {
 
@@ -137,6 +189,14 @@ export async function POST(req: NextRequest) {
 
 
     if (!refreshed?.referenceNo) {
+
+      await auditFailed("MISSING_REFERENCE_NO", {
+
+        entity: "LershaLoanRequest",
+
+        entityId: loanRequest.id,
+
+      });
 
       return NextResponse.json(
 
@@ -182,13 +242,25 @@ export async function POST(req: NextRequest) {
 
 
 
-    const lershaResponse = await sendDisbursementConfirmation(lershaPayload);
+    const lershaResponse = await sendDisbursementConfirmation(lershaPayload, {
+
+      actorId: "lersha-integration",
+
+      ...auditCtx,
+
+      entity: "LershaLoanRequest",
+
+      entityId: loanRequest.id,
+
+    });
 
 
 
     await createAuditLog({
 
-      actorId: "system",
+      // Lersha calls this endpoint; "system" made it look like a scheduled job.
+
+      actorId: "lersha-integration",
 
       action: "LERSHA_DISBURSEMENT_CONFIRMED",
 
@@ -202,6 +274,14 @@ export async function POST(req: NextRequest) {
 
         remainingBalance: remaining_balance,
 
+        // What the balance was before Lersha's figure overwrote it.
+
+        previousRemainingBalance: refreshed.remainingBalance,
+
+        productId: refreshed.productId,
+
+        referenceNo: refreshed.referenceNo,
+
         lershaResponseOk: lershaResponse.ok,
 
         lershaStatus: lershaResponse.status,
@@ -209,6 +289,8 @@ export async function POST(req: NextRequest) {
         disbursementResult,
 
       },
+
+      ...auditCtx,
 
     });
 
@@ -237,6 +319,28 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
 
     console.error("[disbursement] Error:", error);
+
+    await createAuditLog({
+
+      actorId: "lersha-integration",
+
+      action: "LERSHA_DISBURSEMENT_CONFIRMATION_FAILED",
+
+      entity: "LershaFarmer",
+
+      details: {
+
+        farmerId: attemptedFarmerId,
+
+        reason: "UNEXPECTED_ERROR",
+
+        error: error?.message ?? String(error),
+
+      },
+
+      ...auditCtx,
+
+    });
 
     return NextResponse.json(
 

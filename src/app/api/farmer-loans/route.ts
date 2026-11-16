@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { sendLoanDecision } from "@/lib/lersha/client";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import logger from "@/lib/logger";
 import { z } from "zod";
 import { getUserFromSession } from "@/lib/user";
@@ -114,6 +114,10 @@ const decisionSchema = z.object({
  * POST — Approve or decline a loan request and notify Lersha.
  */
 export async function POST(req: NextRequest) {
+  const auditCtx = getAuditRequestContext(req);
+  let actorId = "unauthenticated";
+  let attemptedLoanRequestId: string | null = null;
+
   try {
     const body = await req.json();
 
@@ -126,6 +130,28 @@ export async function POST(req: NextRequest) {
     }
 
     const { loanRequestId, decision, comment } = parsed.data;
+    attemptedLoanRequestId = loanRequestId;
+
+    // Who is deciding. Resolved before the lookups below so a refused attempt
+    // can be attributed too. This handler does not itself require a session, so
+    // a call without one is recorded as "unauthenticated" rather than passed off
+    // as the system.
+    const user = await getUserFromSession();
+    actorId = user?.id ?? "unauthenticated";
+
+    const auditDenied = (
+      reason: string,
+      details: Record<string, unknown> = {},
+      found = true,
+    ) =>
+      createAuditLog({
+        actorId,
+        action: "LERSHA_LOAN_DECISION_DENIED",
+        entity: "LershaLoanRequest",
+        entityId: found ? loanRequestId : undefined,
+        details: { loanRequestId, decision, reason, ...details },
+        ...auditCtx,
+      });
 
     const loanRequest = await prisma.lershaLoanRequest.findUnique({
       where: { id: loanRequestId },
@@ -133,6 +159,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!loanRequest) {
+      await auditDenied("LOAN_REQUEST_NOT_FOUND", {}, false);
       return NextResponse.json(
         { error: "Loan request not found." },
         { status: 404 },
@@ -140,9 +167,13 @@ export async function POST(req: NextRequest) {
     }
 
     // A District user decides only on their own district's farmers.
-    const user = await getUserFromSession();
     const districtCode = getDistrictCodeFromUser(user ?? {});
     if (districtCode != null && loanRequest.farmer.districtCode !== districtCode) {
+      await auditDenied("CROSS_DISTRICT", {
+        farmerId: loanRequest.farmer.farmerId,
+        farmerDistrictCode: loanRequest.farmer.districtCode,
+        actingDistrictCode: districtCode,
+      });
       return NextResponse.json(
         { error: "This loan request belongs to another district." },
         { status: 403 },
@@ -150,6 +181,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (loanRequest.status !== "OTP_VERIFIED") {
+      await auditDenied("INVALID_STATUS", {
+        farmerId: loanRequest.farmer.farmerId,
+        currentStatus: loanRequest.status,
+      });
       return NextResponse.json(
         {
           error: `Cannot decide on a request with status "${loanRequest.status}". Only OTP_VERIFIED requests can be decided.`,
@@ -173,15 +208,25 @@ export async function POST(req: NextRequest) {
 
     // Notify Lersha
     let lershaNotified = false;
+    let lershaStatus: number | null = null;
     try {
-      const lershaResult = await sendLoanDecision({
-        farmer_id: loanRequest.farmer.farmerId,
-        decision,
-        comment: comment ?? undefined,
-        reference_no: referenceNo,
-      });
+      const lershaResult = await sendLoanDecision(
+        {
+          farmer_id: loanRequest.farmer.farmerId,
+          decision,
+          comment: comment ?? undefined,
+          reference_no: referenceNo,
+        },
+        {
+          actorId,
+          ...auditCtx,
+          entity: "LershaLoanRequest",
+          entityId: loanRequestId,
+        },
+      );
 
       lershaNotified = lershaResult.ok;
+      lershaStatus = lershaResult.status;
 
       await prisma.lershaLoanRequest.update({
         where: { id: loanRequestId },
@@ -203,17 +248,22 @@ export async function POST(req: NextRequest) {
     }
 
     await createAuditLog({
-      actorId: "system",
+      actorId,
       action: `LERSHA_LOAN_${decision}`,
       entity: "LershaLoanRequest",
       entityId: loanRequestId,
       details: {
         farmerId: loanRequest.farmer.farmerId,
+        farmerName: loanRequest.farmer.farmerName,
+        productId: loanRequest.productId,
         decision,
+        previousStatus: loanRequest.status,
         comment,
         referenceNo,
         lershaNotified,
+        lershaStatus,
       },
+      ...auditCtx,
     });
 
     return NextResponse.json({
@@ -224,6 +274,16 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: any) {
     console.error("[farmer-loans POST] Error:", error);
+    await createAuditLog({
+      actorId,
+      action: "LERSHA_LOAN_DECISION_FAILED",
+      entity: "LershaLoanRequest",
+      details: {
+        loanRequestId: attemptedLoanRequestId,
+        error: error?.message ?? String(error),
+      },
+      ...auditCtx,
+    });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

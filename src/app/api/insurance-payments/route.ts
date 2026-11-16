@@ -3,7 +3,11 @@ import prisma from "@/lib/prisma";
 import { z } from "zod";
 import { getUserFromSession } from "@/lib/user";
 import { hasPermission, type PermissionSet } from "@/lib/permissions";
-import { createAuditLog } from "@/lib/audit-log";
+import {
+  createAuditLog,
+  getAuditRequestContext,
+  type AuditRequestContext,
+} from "@/lib/audit-log";
 import logger from "@/lib/logger";
 import {
   processInsurancePayment,
@@ -248,6 +252,7 @@ export async function POST(req: NextRequest) {
   const auth = await authorize("update");
   if (auth.error) return auth.error;
   const user = auth.user!;
+  const auditCtx = getAuditRequestContext(req);
 
   try {
     const body = await req.json().catch(() => null);
@@ -274,6 +279,20 @@ export async function POST(req: NextRequest) {
         },
       });
       if (inDistrict !== uniqueIds.length) {
+        // A District user tried to act on payments outside their district.
+        await createAuditLog({
+          actorId: user.id,
+          action: "LERSHA_INSURANCE_DECISION_DENIED",
+          entity: "LershaInsurancePayment",
+          details: {
+            reason: "CROSS_DISTRICT",
+            action,
+            actingDistrictCode: districtCode,
+            paymentIds: uniqueIds,
+            inDistrictCount: inDistrict,
+          },
+          ...auditCtx,
+        });
         return NextResponse.json(
           { error: "One or more payments belong to another district." },
           { status: 403 },
@@ -282,19 +301,30 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "REJECT") {
-      return await handleReject(uniqueIds, rejectionReason, user.id);
+      return await handleReject(uniqueIds, rejectionReason, user.id, auditCtx);
     }
-    return await handleApprove(uniqueIds, user.id);
+    return await handleApprove(uniqueIds, user.id, auditCtx);
   } catch (error) {
     console.error("[insurance-payments POST] Error:", error);
+    await createAuditLog({
+      actorId: user.id,
+      action: "LERSHA_INSURANCE_DECISION_FAILED",
+      entity: "LershaInsurancePayment",
+      details: { error: (error as Error)?.message ?? String(error) },
+      ...auditCtx,
+    });
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-async function handleApprove(paymentIds: string[], actorId: string) {
+async function handleApprove(
+  paymentIds: string[],
+  actorId: string,
+  auditCtx: AuditRequestContext,
+) {
   const outcomes: InsurancePaymentOutcome[] = [];
   for (const id of paymentIds) {
-    outcomes.push(await processInsurancePayment(id, actorId));
+    outcomes.push(await processInsurancePayment(id, actorId, auditCtx));
   }
 
   // Batch the SUCCESS confirmations into a single Lersha call.
@@ -305,7 +335,15 @@ async function handleApprove(paymentIds: string[], actorId: string) {
       const requests = toConfirm.map(
         (o) => o.confirmation as InsuranceConfirmationRequest,
       );
-      const result = await sendInsuranceConfirmation({ requests });
+      const result = await sendInsuranceConfirmation(
+        { requests },
+        {
+          actorId,
+          ...auditCtx,
+          entity: "LershaInsurancePayment",
+          context: { paymentIds: toConfirm.map((o) => o.paymentId) },
+        },
+      );
       lershaNotified = result.ok;
       const sentAt = new Date();
       const responseStr = JSON.stringify(result.data ?? null);
@@ -358,6 +396,7 @@ async function handleReject(
   paymentIds: string[],
   rejectionReason: string | undefined,
   actorId: string,
+  auditCtx: AuditRequestContext,
 ) {
   const confirmations: InsuranceConfirmationRequest[] = [];
   const confirmedPaymentIds: string[] = [];
@@ -370,9 +409,29 @@ async function handleReject(
     });
     if (!payment) {
       results.push({ paymentId: id, ok: false, message: "Not found" });
+      await createAuditLog({
+        actorId,
+        action: "LERSHA_INSURANCE_REJECTION_FAILED",
+        entity: "LershaInsurancePayment",
+        details: { paymentId: id, reason: "PAYMENT_NOT_FOUND" },
+        ...auditCtx,
+      });
       continue;
     }
     if (payment.status !== "REQUESTED") {
+      // e.g. an attempt to reject a payment that was already paid out.
+      await createAuditLog({
+        actorId,
+        action: "LERSHA_INSURANCE_REJECTION_FAILED",
+        entity: "LershaInsurancePayment",
+        entityId: id,
+        details: {
+          farmerId: payment.farmer.farmerId,
+          reason: "INVALID_PAYMENT_STATUS",
+          currentStatus: payment.status,
+        },
+        ...auditCtx,
+      });
       results.push({
         paymentId: id,
         ok: false,
@@ -413,14 +472,24 @@ async function handleReject(
         insuranceAmount: payment.insuranceAmount,
         rejectionReason: rejectionReason ?? null,
         remainingBalance: remaining,
+        batchId: payment.batchId,
       },
+      ...auditCtx,
     });
   }
 
   let lershaNotified = false;
   if (confirmations.length > 0) {
     try {
-      const result = await sendInsuranceConfirmation({ requests: confirmations });
+      const result = await sendInsuranceConfirmation(
+        { requests: confirmations },
+        {
+          actorId,
+          ...auditCtx,
+          entity: "LershaInsurancePayment",
+          context: { paymentIds: confirmedPaymentIds },
+        },
+      );
       lershaNotified = result.ok;
       const sentAt = new Date();
       const responseStr = JSON.stringify(result.data ?? null);

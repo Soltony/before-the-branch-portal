@@ -206,6 +206,9 @@ export async function processExternalDisbursement(
   }
 
   const correlationId = newAuditCorrelationId();
+  // The core payload carries no loan id, so name the loan here — otherwise these
+  // entries cannot be tied back to the loan they moved money for.
+  const auditContext = loanId ? { loanId } : undefined;
   const startedAt = Date.now();
 
   try {
@@ -217,6 +220,7 @@ export async function processExternalDisbursement(
         integration: "DISBURSEMENT",
         entity: "DisbursementTransaction",
         correlationId,
+        context: auditContext,
       },
       {
         method: "POST",
@@ -254,6 +258,7 @@ export async function processExternalDisbursement(
         integration: "DISBURSEMENT",
         entity: "DisbursementTransaction",
         correlationId,
+        context: auditContext,
       },
       {
         status: res.status,
@@ -338,6 +343,7 @@ export async function processExternalDisbursement(
         integration: "DISBURSEMENT",
         entity: "DisbursementTransaction",
         correlationId,
+        context: auditContext,
       },
       fetchErr,
       {

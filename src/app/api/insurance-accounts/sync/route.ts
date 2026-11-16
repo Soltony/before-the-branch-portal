@@ -1,8 +1,8 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getUserFromSession } from "@/lib/user";
 import { hasPermission } from "@/lib/permissions";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import { syncInsuranceAccountsFromFarmers } from "@/lib/lersha/insurance-accounts";
 
 const MODULE = "insurance-payments";
@@ -14,7 +14,7 @@ const MODULE = "insurance-payments";
  * purposes and upsert them into InsuranceAccount, then return the refreshed
  * list. Replaces manual insurer registration.
  */
-export async function POST() {
+export async function POST(req: NextRequest) {
   const user = await getUserFromSession();
   if (!user?.id) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -36,6 +36,7 @@ export async function POST() {
         action: "INSURANCE_ACCOUNTS_SYNCED",
         entity: "InsuranceAccount",
         details: result,
+        ...getAuditRequestContext(req),
       });
     }
 

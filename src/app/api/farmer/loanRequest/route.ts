@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { loanRequestSchema } from "@/lib/lersha/types";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import { randomInt } from "crypto";
 import { isFarmerApprovedForProcessing } from "@/lib/lersha/farmer-status";
 import { areDisbursementsEnabled } from "@/lib/disbursement-control";
@@ -20,6 +20,9 @@ function generateOtp(): string {
 const OTP_EXPIRY_MINUTES = 5;
 
 export async function POST(req: NextRequest) {
+  const auditCtx = getAuditRequestContext(req);
+  let attempted: { farmerId: string; productId: string } | null = null;
+
   try {
     console.log("[loanRequest] Request received");
     const body = await req.json();
@@ -36,6 +39,29 @@ export async function POST(req: NextRequest) {
 
     const { farmer_id, product_id } = parsed.data;
     console.log("[loanRequest] Parsed identifiers:", { farmer_id, product_id });
+    attempted = { farmerId: farmer_id, productId: product_id };
+
+    // A refused request creates no LershaLoanRequest row and sends no OTP, so
+    // without this entry nothing shows that the loan was asked for or why it
+    // was turned down.
+    const auditRejected = (
+      reason: string,
+      details: Record<string, unknown> = {},
+      entityId?: string,
+    ) =>
+      createAuditLog({
+        actorId: "lersha-integration",
+        action: "LERSHA_LOAN_REQUEST_REJECTED",
+        entity: "LershaFarmer",
+        entityId,
+        details: {
+          farmerId: farmer_id,
+          productId: product_id,
+          reason,
+          ...details,
+        },
+        ...auditCtx,
+      });
 
     // The kill-switch is enforced here, at the front of the flow: a loan request
     // exists to be disbursed, so if disbursements are off there is no point
@@ -47,6 +73,7 @@ export async function POST(req: NextRequest) {
         farmer_id,
         product_id,
       });
+      await auditRejected("DISBURSEMENTS_DISABLED");
       return NextResponse.json(
         {
           error:
@@ -62,6 +89,7 @@ export async function POST(req: NextRequest) {
     });
     if (!farmer) {
       console.warn("[loanRequest] Farmer not found:", { farmer_id });
+      await auditRejected("FARMER_NOT_FOUND");
       return NextResponse.json(
         { error: "Farmer not found. Please register the farmer first." },
         { status: 404 },
@@ -74,6 +102,11 @@ export async function POST(req: NextRequest) {
         farmer_id,
         status: farmer.status,
       });
+      await auditRejected(
+        "FARMER_NOT_APPROVED",
+        { farmerStatus: farmer.status },
+        farmer.id,
+      );
       return NextResponse.json(
         {
           error:
@@ -94,6 +127,7 @@ export async function POST(req: NextRequest) {
       console.warn("[loanRequest] No signed loan contract for farmer:", {
         farmer_id,
       });
+      await auditRejected("NO_SIGNED_CONTRACT", {}, farmer.id);
       return NextResponse.json(
         {
           error:
@@ -112,6 +146,12 @@ export async function POST(req: NextRequest) {
         farmer_id,
         product_id,
       });
+      await auditRejected(
+        "INVALID_PRODUCT",
+        // True when the product exists but is another farmer's.
+        { belongsToAnotherFarmer: Boolean(loanPurpose) },
+        farmer.id,
+      );
       return NextResponse.json(
         { error: "Invalid product_id for this farmer." },
         { status: 400 },
@@ -142,6 +182,11 @@ export async function POST(req: NextRequest) {
         farmer_id,
         product_id,
       });
+      await auditRejected(
+        "PRODUCT_ALREADY_DISBURSED",
+        { productAmount: loanPurpose.totalCost },
+        farmer.id,
+      );
       return NextResponse.json(
         { error: "This product has already been disbursed for this farmer." },
         { status: 409 },
@@ -176,6 +221,16 @@ export async function POST(req: NextRequest) {
         requestedProductAmount: loanPurpose.totalCost,
         remainingBeforeRequest,
       });
+      await auditRejected(
+        "INSUFFICIENT_REMAINING_BALANCE",
+        {
+          productAmount: loanPurpose.totalCost,
+          requestedLoanAmount: farmer.requestedLoanAmount,
+          totalDisbursedAmount,
+          remainingBeforeRequest,
+        },
+        farmer.id,
+      );
       return NextResponse.json(
         {
           error:
@@ -212,9 +267,13 @@ export async function POST(req: NextRequest) {
       details: {
         farmerId: farmer_id,
         productId: product_id,
+        loanPurpose: loanPurpose.loanPurpose,
         productAmount: loanPurpose.totalCost,
         remainingBeforeRequest,
+        signedContractId: signedContract.id,
+        otpExpiresAt: otpExpiresAt.toISOString(),
       },
+      ...auditCtx,
     });
 
     // Send OTP directly to farmer via SMS
@@ -230,6 +289,25 @@ export async function POST(req: NextRequest) {
       console.error("[loanRequest] Failed to send OTP SMS:", smsResult);
     }
 
+    // The OTP is the farmer's consent to this loan, so whether it actually went
+    // out is part of the record — Lersha is told "OTP sent" either way. Logged
+    // separately from LERSHA_LOAN_REQUESTED because the send retries for up to a
+    // minute and the request must not go unrecorded if it is cut short. The code
+    // itself is never logged.
+    await createAuditLog({
+      actorId: "lersha-integration",
+      action: smsResult.ok ? "LERSHA_OTP_SENT" : "LERSHA_OTP_SEND_FAILED",
+      entity: "LershaLoanRequest",
+      entityId: loanRequest.id,
+      details: {
+        farmerId: farmer_id,
+        productId: product_id,
+        otpExpiresAt: otpExpiresAt.toISOString(),
+        smsError: smsResult.ok ? null : (smsResult.error ?? null),
+      },
+      ...auditCtx,
+    });
+
     const response = {
       message: "OTP sent to farmer's registered phone number.",
       requestId: loanRequest.id,
@@ -242,6 +320,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(response, { status: 201 });
   } catch (error: any) {
     console.error("[loanRequest] Error:", error);
+    await createAuditLog({
+      actorId: "lersha-integration",
+      action: "LERSHA_LOAN_REQUEST_FAILED",
+      entity: "LershaFarmer",
+      details: {
+        farmerId: attempted?.farmerId ?? null,
+        productId: attempted?.productId ?? null,
+        error: error?.message ?? String(error),
+      },
+      ...auditCtx,
+    });
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

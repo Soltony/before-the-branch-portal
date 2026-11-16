@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import prisma from "@/lib/prisma";
 import { priceChangeRequestSchema } from "@/lib/lersha/types";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import { getPriceChangeThresholdPercent } from "@/lib/price-change-control";
 
 /**
@@ -30,6 +30,7 @@ import { getPriceChangeThresholdPercent } from "@/lib/price-change-control";
  */
 export async function POST(req: NextRequest) {
   const batchId = randomUUID();
+  const auditCtx = getAuditRequestContext(req);
   try {
     const body = await req.json().catch(() => null);
     const parsed = priceChangeRequestSchema.safeParse(body);
@@ -55,6 +56,21 @@ export async function POST(req: NextRequest) {
       seen.add(c.productId);
     }
     if (duplicateProductIds.size > 0) {
+      // Rejected like any other violation, so recorded like one.
+      await createAuditLog({
+        actorId: "lersha-integration",
+        action: "LERSHA_PRICE_CHANGE_REJECTED",
+        entity: "LershaLoanPurpose",
+        details: {
+          batchId,
+          requested: changes.length,
+          violations: Array.from(duplicateProductIds).map((productId) => ({
+            productId,
+            reason: "DUPLICATE_IN_REQUEST",
+          })),
+        },
+        ...auditCtx,
+      });
       return NextResponse.json(
         {
           success: false,
@@ -154,6 +170,7 @@ export async function POST(req: NextRequest) {
       productId: string;
       oldUnitPrice: number | null;
       newUnitPrice: number;
+      oldTotalCost: number;
       newTotalCost: number | null;
     };
 
@@ -225,6 +242,7 @@ export async function POST(req: NextRequest) {
         productId: change.productId,
         oldUnitPrice,
         newUnitPrice: change.newUnitPrice,
+        oldTotalCost: purpose.totalCost,
         newTotalCost,
       });
     }
@@ -284,6 +302,7 @@ export async function POST(req: NextRequest) {
           requested: changes.length,
           violations,
         },
+        ...auditCtx,
       });
       return NextResponse.json(
         {
@@ -322,7 +341,22 @@ export async function POST(req: NextRequest) {
       actorId: "lersha-integration",
       action: "LERSHA_PRICE_CHANGE_APPLIED",
       entity: "LershaLoanPurpose",
-      details: { batchId, thresholdPercent, applied },
+      details: {
+        batchId,
+        thresholdPercent,
+        // totalCost is the amount that will be lent for the product, so record
+        // what it was before as well as after. (Kept out of `applied`, which is
+        // the response body sent back to Lersha.)
+        applied: planned.map((u) => ({
+          farmerId: u.farmerId,
+          productId: u.productId,
+          oldUnitPrice: u.oldUnitPrice,
+          newUnitPrice: u.newUnitPrice,
+          oldTotalCost: u.oldTotalCost,
+          newTotalCost: u.newTotalCost,
+        })),
+      },
+      ...auditCtx,
     });
 
     return NextResponse.json(
@@ -342,6 +376,7 @@ export async function POST(req: NextRequest) {
       action: "LERSHA_PRICE_CHANGE_FAILED",
       entity: "LershaLoanPurpose",
       details: { batchId, error: (error as Error)?.message ?? String(error) },
+      ...auditCtx,
     }).catch(() => null);
     return NextResponse.json(
       { success: false, message: "Internal server error" },

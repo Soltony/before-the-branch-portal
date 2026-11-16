@@ -1,5 +1,5 @@
 import prisma from "@/lib/prisma";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, type AuditRequestContext } from "@/lib/audit-log";
 import { sendDisbursementConfirmation } from "@/lib/lersha/client";
 import logger from "@/lib/logger";
 import {
@@ -81,7 +81,39 @@ export async function resolveLershaProvider() {
  */
 export async function autoDisburseFarmerLoan(
   lershaLoanRequestId: string,
+  requestContext: Partial<AuditRequestContext> = {},
 ): Promise<AutoDisbursementResult> {
+  // Filled in as the run progresses so a failure entry says how far it got.
+  // `bookedLoanId` is set once the booking transaction commits: a failure after
+  // that point means a loan exists, which is a very different thing to follow
+  // up on than a clean refusal.
+  let farmerExternalId: string | null = null;
+  let bookedLoanId: string | null = null;
+
+  // A refused or failed disbursement leaves the request undisbursed with nothing
+  // else to show for it, so each one is audited with its reason. (The idempotent
+  // "already disbursed" answers are successes and are not recorded again.)
+  const failed = async (
+    result: AutoDisbursementResult,
+    details: Record<string, unknown> = {},
+  ): Promise<AutoDisbursementResult> => {
+    await createAuditLog({
+      actorId: "lersha-integration",
+      action: "LERSHA_AUTO_DISBURSEMENT_FAILED",
+      entity: "LershaLoanRequest",
+      entityId: lershaLoanRequestId,
+      details: {
+        farmerId: farmerExternalId,
+        reason: result.error,
+        message: result.message,
+        bookedLoanId,
+        ...details,
+      },
+      ...requestContext,
+    });
+    return result;
+  };
+
   try {
     const loanRequest = await prisma.lershaLoanRequest.findUnique({
       where: { id: lershaLoanRequestId },
@@ -89,12 +121,13 @@ export async function autoDisburseFarmerLoan(
     });
 
     if (!loanRequest) {
-      return {
+      return failed({
         success: false,
         message: "Loan request not found",
         error: "LOAN_REQUEST_NOT_FOUND",
-      };
+      });
     }
+    farmerExternalId = loanRequest.farmer.farmerId;
 
     if (loanRequest.status === "DISBURSED") {
       return {
@@ -105,11 +138,14 @@ export async function autoDisburseFarmerLoan(
     }
 
     if (loanRequest.status !== "OTP_VERIFIED") {
-      return {
-        success: false,
-        message: `Cannot disburse loan with status: ${loanRequest.status}`,
-        error: "INVALID_LOAN_STATUS",
-      };
+      return failed(
+        {
+          success: false,
+          message: `Cannot disburse loan with status: ${loanRequest.status}`,
+          error: "INVALID_LOAN_STATUS",
+        },
+        { status: loanRequest.status },
+      );
     }
 
     // Respect the global disbursement kill-switch, mirroring the personal-loan
@@ -119,11 +155,14 @@ export async function autoDisburseFarmerLoan(
     // disbursements are re-enabled (e.g. via /api/farmer/disbursement).
     const disbursementsEnabled = await areDisbursementsEnabled();
     if (!disbursementsEnabled) {
-      return {
-        success: false,
-        message: "Disbursements are currently disabled.",
-        error: "DISBURSEMENTS_DISABLED",
-      };
+      return failed(
+        {
+          success: false,
+          message: "Disbursements are currently disabled.",
+          error: "DISBURSEMENTS_DISABLED",
+        },
+        { productId: loanRequest.productId },
+      );
     }
 
     const farmer = loanRequest.farmer;
@@ -134,14 +173,23 @@ export async function autoDisburseFarmerLoan(
     });
 
     if (!selectedLoanPurpose) {
-      return {
-        success: false,
-        message: "Loan purpose not found for requested product",
-        error: "LOAN_PURPOSE_NOT_FOUND",
-      };
+      return failed(
+        {
+          success: false,
+          message: "Loan purpose not found for requested product",
+          error: "LOAN_PURPOSE_NOT_FOUND",
+        },
+        { productId: loanRequest.productId },
+      );
     }
 
     const disbursementAmount = selectedLoanPurpose.totalCost;
+    // Shared by every failure entry from here on.
+    const attempt = {
+      productId: loanRequest.productId,
+      loanPurpose: selectedLoanPurpose.loanPurpose,
+      loanAmount: disbursementAmount,
+    };
 
     // The borrower's own account is credited, not the agro dealer's. It is
     // nominated by the approver at registration approval (Lersha sends no
@@ -153,12 +201,15 @@ export async function autoDisburseFarmerLoan(
       logger.error(
         `[autoDisburseFarmerLoan] Farmer ${farmer.farmerId} has no disbursement account; refusing to book loan request ${lershaLoanRequestId}`,
       );
-      return {
-        success: false,
-        message:
-          "No disbursement account selected for this farmer. Select the account to credit on the farmer's record before disbursing.",
-        error: "NO_FARMER_DISBURSEMENT_ACCOUNT",
-      };
+      return failed(
+        {
+          success: false,
+          message:
+            "No disbursement account selected for this farmer. Select the account to credit on the farmer's record before disbursing.",
+          error: "NO_FARMER_DISBURSEMENT_ACCOUNT",
+        },
+        attempt,
+      );
     }
 
     // The agro dealer supplying the inputs for this purpose. The core credits
@@ -173,21 +224,31 @@ export async function autoDisburseFarmerLoan(
 
     const product = await resolveAgricultureProduct();
     if (!product) {
-      return {
-        success: false,
-        message:
-          "No active agriculture LoanProduct found. Please configure a LoanProduct first.",
-        error: "NO_AGRICULTURE_PRODUCT",
-      };
+      return failed(
+        {
+          success: false,
+          message:
+            "No active agriculture LoanProduct found. Please configure a LoanProduct first.",
+          error: "NO_AGRICULTURE_PRODUCT",
+        },
+        attempt,
+      );
     }
 
     const provider = product.provider;
     if (provider.initialBalance < disbursementAmount) {
-      return {
-        success: false,
-        message: `Insufficient provider funds. Available: ${provider.initialBalance}, Requested: ${disbursementAmount}`,
-        error: "INSUFFICIENT_PROVIDER_FUNDS",
-      };
+      return failed(
+        {
+          success: false,
+          message: `Insufficient provider funds. Available: ${provider.initialBalance}, Requested: ${disbursementAmount}`,
+          error: "INSUFFICIENT_PROVIDER_FUNDS",
+        },
+        {
+          ...attempt,
+          providerId: provider.id,
+          providerAvailable: provider.initialBalance,
+        },
+      );
     }
 
     let borrower = await prisma.borrower.findUnique({
@@ -245,28 +306,37 @@ export async function autoDisburseFarmerLoan(
     );
 
     if (!principalReceivableAccount) {
-      return {
-        success: false,
-        message: "Principal Receivable ledger account not found.",
-        error: "MISSING_LEDGER_ACCOUNTS",
-      };
+      return failed(
+        {
+          success: false,
+          message: "Principal Receivable ledger account not found.",
+          error: "MISSING_LEDGER_ACCOUNTS",
+        },
+        { ...attempt, providerId: provider.id },
+      );
     }
     if (calculatedServiceFee > 0 && !serviceFeeReceivableAccount) {
-      return {
-        success: false,
-        message: "Service Fee Receivable ledger account not found.",
-        error: "MISSING_LEDGER_ACCOUNTS",
-      };
+      return failed(
+        {
+          success: false,
+          message: "Service Fee Receivable ledger account not found.",
+          error: "MISSING_LEDGER_ACCOUNTS",
+        },
+        { ...attempt, providerId: provider.id },
+      );
     }
     if (
       (calculatedTax > 0 || inclusiveTaxAmount > 0) &&
       !taxReceivableAccount
     ) {
-      return {
-        success: false,
-        message: "Tax Receivable ledger account not found.",
-        error: "MISSING_LEDGER_ACCOUNTS",
-      };
+      return failed(
+        {
+          success: false,
+          message: "Tax Receivable ledger account not found.",
+          error: "MISSING_LEDGER_ACCOUNTS",
+        },
+        { ...attempt, providerId: provider.id },
+      );
     }
 
     const forcedProviderId = process.env.FORCE_PROVIDER_ID;
@@ -514,8 +584,12 @@ export async function autoDisburseFarmerLoan(
     // money they never received. A switch flipped because the core is down
     // simply means this call fails and is recorded FAILED for reversal/retry,
     // which is the correct, visible outcome.
+    bookedLoanId = loan.id;
+
     let externalDisbursementAttempted = true;
     let externalDisbursementOk = false;
+    let externalDisbursementError: string | null = null;
+    let externalTransactionId: string | null = null;
 
     {
       const ext = await processExternalDisbursement({
@@ -525,8 +599,12 @@ export async function autoDisburseFarmerLoan(
         amount: disbursementTransferAmount,
         loanId: loan.id,
         actorId: "lersha-integration",
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
       });
       externalDisbursementOk = ext.ok;
+      externalDisbursementError = ext.error ?? null;
+      externalTransactionId = ext.transactionId ?? null;
       if (!ext.ok) {
         logger.error(
           `[autoDisburseFarmerLoan] External disbursement failed for loan ${loan.id}: ${ext.error}`,
@@ -539,6 +617,26 @@ export async function autoDisburseFarmerLoan(
           providerId: provider.id,
           amount: disbursementTransferAmount,
           result: ext,
+        });
+        // The loan is booked but the money did not move. The summary entry
+        // below is still named LERSHA_AUTO_DISBURSEMENT, so give this its own
+        // action — it is the case someone most needs to be able to filter for.
+        await createAuditLog({
+          actorId: "lersha-integration",
+          action: "LERSHA_DISBURSEMENT_TRANSFER_FAILED",
+          entity: "LershaLoanRequest",
+          entityId: lershaLoanRequestId,
+          details: {
+            kind: "LOAN",
+            farmerId: farmer.farmerId,
+            loanId: loan.id,
+            creditAccount,
+            agroDealerAccount: agroDealerAccount || null,
+            amount: disbursementTransferAmount,
+            statusCode: ext.statusCode,
+            error: ext.error ?? null,
+          },
+          ...requestContext,
         });
       }
     }
@@ -557,7 +655,13 @@ export async function autoDisburseFarmerLoan(
         referenceNo: loanRequest.referenceNo,
         status: "DISBURSED" as const,
       };
-      const lershaResult = await sendDisbursementConfirmation(lershaPayload);
+      const lershaResult = await sendDisbursementConfirmation(lershaPayload, {
+        actorId: "lersha-integration",
+        ...requestContext,
+        entity: "LershaLoanRequest",
+        entityId: lershaLoanRequestId,
+        context: { loanId: loan.id },
+      });
       lershaNotified = lershaResult.ok;
       if (!lershaResult.ok) {
         logger.error(
@@ -596,9 +700,16 @@ export async function autoDisburseFarmerLoan(
           ? calculateAgroDealersAmount(disbursementTransferAmount)
           : null,
         lershaNotified,
+        referenceNo: loanRequest.referenceNo,
+        disbursementTransferAmount,
         externalDisbursementAttempted,
         externalDisbursementOk,
+        // Why the core refused, when it did. The loan stays booked either way,
+        // so this is what tells a reviewer the farmer has not been paid.
+        externalDisbursementError,
+        externalTransactionId,
       },
+      ...requestContext,
     });
 
     return {
@@ -619,11 +730,14 @@ export async function autoDisburseFarmerLoan(
       logger.warn(
         `[autoDisburseFarmerLoan] Disbursements disabled mid-booking; rolled back request ${lershaLoanRequestId}`,
       );
-      return {
-        success: false,
-        message: "Disbursements are currently disabled.",
-        error: "DISBURSEMENTS_DISABLED",
-      };
+      return failed(
+        {
+          success: false,
+          message: "Disbursements are currently disabled.",
+          error: "DISBURSEMENTS_DISABLED",
+        },
+        { rolledBack: true },
+      );
     }
     if (error instanceof ConcurrentDisbursementError) {
       // A concurrent caller already claimed this request. If it has finished,
@@ -638,17 +752,22 @@ export async function autoDisburseFarmerLoan(
           remainingBalance: current.remainingBalance ?? undefined,
         };
       }
-      return {
+      return failed({
         success: false,
         message: "Disbursement is already in progress for this loan request.",
         error: "DISBURSEMENT_IN_PROGRESS",
-      };
+      });
     }
     console.error("[autoDisburseFarmerLoan] Error:", error);
-    return {
-      success: false,
-      message: "Failed to disburse loan",
-      error: error.message,
-    };
+    return failed(
+      {
+        success: false,
+        message: "Failed to disburse loan",
+        error: error.message,
+      },
+      // The caller still gets the raw message as `error`; the audit entry gets a
+      // stable reason to filter on, with the message alongside.
+      { reason: "UNEXPECTED_ERROR", errorMessage: error?.message ?? String(error) },
+    );
   }
 }

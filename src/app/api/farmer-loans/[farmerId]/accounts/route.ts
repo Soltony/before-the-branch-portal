@@ -3,7 +3,7 @@ import { z } from "zod";
 import prisma from "@/lib/prisma";
 import { getUserFromSession } from "@/lib/user";
 import { hasPermission, type PermissionSet } from "@/lib/permissions";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import {
   listFarmerAccounts,
   verifyFarmerAccountSelection,
@@ -90,6 +90,7 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
   const auth = await authorize("update");
   if (auth.error) return auth.error;
   const user = auth.user!;
+  const auditCtx = getAuditRequestContext(req);
 
   try {
     const { farmerId } = await params;
@@ -112,6 +113,23 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
       parsed.data.accountNumber,
     );
     if (!verified.ok) {
+      // Someone tried to point this farmer's disbursements at an account the
+      // core does not hold against their phone number (or the lookup failed).
+      await createAuditLog({
+        actorId: user.id,
+        action: "LERSHA_FARMER_DISBURSEMENT_ACCOUNT_REJECTED",
+        entity: "LershaFarmer",
+        entityId: farmer.id,
+        details: {
+          farmerId: farmer.farmerId,
+          farmerName: farmer.farmerName,
+          phoneNumber: farmer.phoneNumber,
+          attemptedAccountNo: parsed.data.accountNumber,
+          currentAccountNo: farmer.disbursementAccountNo ?? null,
+          error: verified.error,
+        },
+        ...auditCtx,
+      });
       return NextResponse.json({ error: verified.error }, { status: verified.status });
     }
 
@@ -136,9 +154,12 @@ export async function PUT(req: NextRequest, { params }: RouteParams) {
         farmerName: farmer.farmerName,
         phoneNumber: farmer.phoneNumber,
         previousAccountNo,
+        previousAccountName: farmer.disbursementAccountName ?? null,
         accountNo: verified.account.accountNumber,
         accountName: verified.account.accountName,
+        farmerStatus: farmer.status,
       },
+      ...auditCtx,
     });
 
     return NextResponse.json({

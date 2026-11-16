@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { contractRequestSchema } from "@/lib/lersha/types";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import { isFarmerApprovedForProcessing } from "@/lib/lersha/farmer-status";
 import { labelForLanguage } from "@/lib/lersha/contract-languages";
 import {
@@ -19,6 +19,9 @@ import sendSms from "@/lib/sms";
  * POST /api/farmer/contract/request  { farmer_id, language_code }
  */
 export async function POST(req: NextRequest) {
+  const auditCtx = getAuditRequestContext(req);
+  let attemptedFarmerId: string | null = null;
+
   try {
     console.log("[contract/request] Request received");
     const body = await req.json();
@@ -34,12 +37,35 @@ export async function POST(req: NextRequest) {
     }
 
     const { farmer_id, language_code } = parsed.data;
+    attemptedFarmerId = farmer_id;
+
+    // No contract is created when a request is refused, so this entry is the
+    // only record that Lersha asked.
+    const auditRejected = (
+      reason: string,
+      details: Record<string, unknown> = {},
+      entityId?: string,
+    ) =>
+      createAuditLog({
+        actorId: "lersha-integration",
+        action: "LERSHA_CONTRACT_REQUEST_REJECTED",
+        entity: "LershaFarmer",
+        entityId,
+        details: {
+          farmerId: farmer_id,
+          languageCode: language_code,
+          reason,
+          ...details,
+        },
+        ...auditCtx,
+      });
 
     const farmer = await prisma.lershaFarmer.findUnique({
       where: { farmerId: farmer_id },
     });
     if (!farmer) {
       console.warn("[contract/request] Farmer not found:", { farmer_id });
+      await auditRejected("FARMER_NOT_FOUND");
       return NextResponse.json(
         { error: "Farmer not found. Please register the farmer first." },
         { status: 404 },
@@ -52,6 +78,11 @@ export async function POST(req: NextRequest) {
         farmer_id,
         status: farmer.status,
       });
+      await auditRejected(
+        "FARMER_NOT_APPROVED",
+        { farmerStatus: farmer.status },
+        farmer.id,
+      );
       return NextResponse.json(
         {
           error:
@@ -66,6 +97,7 @@ export async function POST(req: NextRequest) {
     const terms = await resolveActiveLershaTerms();
     if (!terms) {
       console.warn("[contract/request] No active terms configured");
+      await auditRejected("NO_ACTIVE_TERMS", {}, farmer.id);
       return NextResponse.json(
         { error: "No active terms and conditions are configured." },
         { status: 409 },
@@ -108,9 +140,14 @@ export async function POST(req: NextRequest) {
         farmerId: farmer_id,
         languageCode: language_code,
         languageLabel: labelForLanguage(language_code),
+        termsId: terms.id,
         termsVersion: terms.version,
         smsSent: smsResult.ok,
+        // The contract code itself is deliberately left out: it is what the
+        // farmer presents to sign, so it must not be readable from the log.
+        smsError: smsResult.ok ? null : (smsResult.error ?? null),
       },
+      ...auditCtx,
     });
 
     const response: Record<string, unknown> = {
@@ -129,6 +166,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(response, { status: 201 });
   } catch (error: any) {
     console.error("[contract/request] Error:", error);
+    await createAuditLog({
+      actorId: "lersha-integration",
+      action: "LERSHA_CONTRACT_REQUEST_FAILED",
+      entity: "LershaFarmer",
+      details: {
+        farmerId: attemptedFarmerId,
+        error: error?.message ?? String(error),
+      },
+      ...auditCtx,
+    });
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

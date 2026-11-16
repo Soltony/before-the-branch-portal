@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 import { sendLoanDecision } from "@/lib/lersha/client";
 import { randomUUID } from "crypto";
 import { z } from "zod";
@@ -29,6 +29,10 @@ const approvalSchema = z.object({
 type ApprovalInput = z.infer<typeof approvalSchema>;
 
 export async function POST(req: NextRequest) {
+  const auditCtx = getAuditRequestContext(req);
+  let actorId: string | null = null;
+  let attemptedFarmerId: string | null = null;
+
   try {
     console.log("[farmer/approval] Request received");
 
@@ -43,6 +47,7 @@ export async function POST(req: NextRequest) {
       console.warn("[farmer/approval] Rejected unauthenticated decision attempt");
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
+    actorId = actingUser.id;
 
     const body = await req.json();
     console.log("[farmer/approval] Incoming payload:", body);
@@ -64,6 +69,23 @@ export async function POST(req: NextRequest) {
       hasRejectionReason: Boolean(rejectionReason),
       hasDisbursementAccount: Boolean(disbursementAccountNo),
     });
+    attemptedFarmerId = farmer_id;
+
+    // A decision that was attempted but refused changes nothing, so the audit
+    // entry is the only trace of it — who tried, on which farmer, and why not.
+    const auditDenied = (
+      reason: string,
+      details: Record<string, unknown> = {},
+      entityId?: string,
+    ) =>
+      createAuditLog({
+        actorId: actingUser.id,
+        action: "LERSHA_FARMER_DECISION_DENIED",
+        entity: "LershaFarmer",
+        entityId,
+        details: { farmerId: farmer_id, decision, reason, ...details },
+        ...auditCtx,
+      });
 
     // Find the farmer
     const farmer = await prisma.lershaFarmer.findUnique({
@@ -72,6 +94,7 @@ export async function POST(req: NextRequest) {
 
     if (!farmer) {
       console.warn("[farmer/approval] Farmer not found:", { farmer_id });
+      await auditDenied("FARMER_NOT_FOUND");
       return NextResponse.json(
         { error: "Farmer not found." },
         { status: 404 },
@@ -86,6 +109,11 @@ export async function POST(req: NextRequest) {
         farmerDistrictCode: farmer.districtCode,
         actingDistrictCode,
       });
+      await auditDenied(
+        "CROSS_DISTRICT",
+        { farmerDistrictCode: farmer.districtCode, actingDistrictCode },
+        farmer.id,
+      );
       return NextResponse.json(
         { error: "This farmer belongs to another district." },
         { status: 403 },
@@ -99,6 +127,7 @@ export async function POST(req: NextRequest) {
         status: farmer.status,
         decision,
       });
+      await auditDenied("INVALID_STATUS", { currentStatus: farmer.status }, farmer.id);
       return NextResponse.json(
         {
           error: `Cannot ${decision.toLowerCase()} farmer with status: ${farmer.status}. Only pending registrations or pending updates can be approved/rejected.`,
@@ -120,6 +149,7 @@ export async function POST(req: NextRequest) {
         console.warn("[farmer/approval] Approval without a credit account:", {
           farmer_id,
         });
+        await auditDenied("NO_DISBURSEMENT_ACCOUNT", {}, farmer.id);
         return NextResponse.json(
           {
             error:
@@ -138,6 +168,13 @@ export async function POST(req: NextRequest) {
           farmer_id,
           error: verified.error,
         });
+        // An account that is not held against the farmer's phone number was
+        // put forward as the one to credit.
+        await auditDenied(
+          "ACCOUNT_VERIFICATION_FAILED",
+          { attemptedAccountNo: accountNo, error: verified.error },
+          farmer.id,
+        );
         return NextResponse.json(
           { error: verified.error },
           { status: verified.status },
@@ -158,6 +195,7 @@ export async function POST(req: NextRequest) {
               disbursementAccountNo: selectedAccount.accountNumber,
               disbursementAccountName: selectedAccount.accountName,
               disbursementAccountSelectedAt: new Date(),
+              disbursementAccountSelectedBy: actingUser.id,
             }
           : {}),
       },
@@ -180,15 +218,30 @@ export async function POST(req: NextRequest) {
     }
     console.log("[farmer/approval] Sending payload to Lersha:", lershaPayload);
 
-    const lershaResponse = await sendLoanDecision(lershaPayload);
-    console.log("[farmer/approval] Response from Lersha:", {
-      ok: lershaResponse.ok,
-      status: lershaResponse.status,
-      data: lershaResponse.data,
-    });
+    // The decision is already saved at this point. If Lersha cannot be reached
+    // the call throws, and without catching it here the request would end in a
+    // 500 with the farmer approved/rejected and no audit entry saying who did
+    // it. Record the decision either way, then answer 500 as before.
+    let lershaResponse: Awaited<ReturnType<typeof sendLoanDecision>> | null = null;
+    let lershaError: unknown = null;
+    try {
+      lershaResponse = await sendLoanDecision(lershaPayload, {
+        actorId: actingUser.id,
+        ...auditCtx,
+        entity: "LershaFarmer",
+        entityId: farmer.id,
+      });
+      console.log("[farmer/approval] Response from Lersha:", {
+        ok: lershaResponse.ok,
+        status: lershaResponse.status,
+        data: lershaResponse.data,
+      });
+    } catch (err) {
+      lershaError = err;
+    }
 
     await createAuditLog({
-      actorId: "admin-approval", // In production, use the actual admin user ID
+      actorId: actingUser.id,
       action: `LERSHA_FARMER_${decision}`,
       entity: "LershaFarmer",
       entityId: updated.id,
@@ -196,14 +249,35 @@ export async function POST(req: NextRequest) {
         farmerId: farmer_id,
         farmerName: farmer.farmerName,
         decision,
+        // PENDING = first registration, PENDING_UPDATE = review of a later
+        // change from Lersha.
+        previousStatus: farmer.status,
         rejectionReason: rejectionReason || null,
         referenceNo,
         disbursementAccountNo: selectedAccount?.accountNumber ?? null,
         disbursementAccountName: selectedAccount?.accountName ?? null,
-        lershaNotified: lershaResponse.ok,
-        lershaStatus: lershaResponse.status,
+        previousDisbursementAccountNo: farmer.disbursementAccountNo ?? null,
+        lershaNotified: lershaResponse?.ok ?? false,
+        lershaStatus: lershaResponse?.status ?? null,
+        lershaError: lershaError
+          ? lershaError instanceof Error
+            ? lershaError.message
+            : String(lershaError)
+          : null,
       },
+      ...auditCtx,
     });
+
+    if (lershaError || !lershaResponse) {
+      // Answered here rather than rethrown: the catch below records
+      // LERSHA_FARMER_DECISION_FAILED, which would wrongly read as "no decision
+      // was made" when the decision above did go through.
+      console.error("[farmer/approval] Error:", lershaError);
+      return NextResponse.json(
+        { error: "Internal server error" },
+        { status: 500 },
+      );
+    }
 
     const response = {
       message: `Farmer ${decision.toLowerCase()} successfully.`,
@@ -220,6 +294,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(response, { status: 200 });
   } catch (error: any) {
     console.error("[farmer/approval] Error:", error);
+    if (actorId) {
+      await createAuditLog({
+        actorId,
+        action: "LERSHA_FARMER_DECISION_FAILED",
+        entity: "LershaFarmer",
+        details: {
+          farmerId: attemptedFarmerId,
+          error: error?.message ?? String(error),
+        },
+        ...auditCtx,
+      });
+    }
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 },

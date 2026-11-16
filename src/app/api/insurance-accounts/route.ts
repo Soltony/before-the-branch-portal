@@ -3,7 +3,7 @@ import prisma from "@/lib/prisma";
 import { z } from "zod";
 import { getUserFromSession } from "@/lib/user";
 import { hasPermission, type PermissionSet } from "@/lib/permissions";
-import { createAuditLog } from "@/lib/audit-log";
+import { createAuditLog, getAuditRequestContext } from "@/lib/audit-log";
 
 const MODULE = "insurance-payments";
 
@@ -53,6 +53,11 @@ export async function PUT(req: NextRequest) {
 
   try {
     const data = updateSchema.parse(await req.json());
+    // Read first so the entry shows what the NIB id and status were changed from.
+    const previous = await prisma.insuranceAccount.findUnique({
+      where: { id: data.id },
+      select: { insuranceId: true, status: true },
+    });
     const updated = await prisma.insuranceAccount.update({
       where: { id: data.id },
       data: {
@@ -65,7 +70,12 @@ export async function PUT(req: NextRequest) {
       action: "INSURANCE_ACCOUNT_UPDATED",
       entity: "InsuranceAccount",
       entityId: updated.id,
-      details: { ...updated },
+      details: {
+        ...updated,
+        previousInsuranceId: previous?.insuranceId ?? null,
+        previousStatus: previous?.status ?? null,
+      },
+      ...getAuditRequestContext(req),
     });
     return NextResponse.json(updated);
   } catch (error) {
@@ -88,12 +98,21 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    await prisma.insuranceAccount.delete({ where: { id } });
+    // delete() returns the removed row; without it the entry would hold only an
+    // id that no longer resolves to anything.
+    const deleted = await prisma.insuranceAccount.delete({ where: { id } });
     await createAuditLog({
       actorId: auth.user!.id,
       action: "INSURANCE_ACCOUNT_DELETED",
       entity: "InsuranceAccount",
       entityId: id,
+      details: {
+        insuranceName: deleted.insuranceName,
+        accountNumber: deleted.accountNumber,
+        insuranceId: deleted.insuranceId,
+        status: deleted.status,
+      },
+      ...getAuditRequestContext(req),
     });
     return NextResponse.json({ message: "Deleted" });
   } catch (error) {

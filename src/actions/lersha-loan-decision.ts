@@ -3,6 +3,7 @@
 import prisma from "@/lib/prisma";
 import { sendLoanDecision } from "@/lib/lersha/client";
 import { createAuditLog } from "@/lib/audit-log";
+import { getUserFromSession } from "@/lib/user";
 import logger from "@/lib/logger";
 
 export type LoanDecisionInput = {
@@ -26,6 +27,11 @@ export async function processLoanDecision(
 ): Promise<LoanDecisionResult> {
   const { loanRequestId, decision, comment } = input;
   console.log("[LoanDecision] Received decision input:", input);
+
+  // Attribute the decision to whoever is signed in, as /api/farmer-loans does;
+  // "system" hid who approved or declined the loan.
+  const actingUser = await getUserFromSession();
+  const actorId = actingUser?.id ?? "unauthenticated";
 
   const loanRequest = await prisma.lershaLoanRequest.findUnique({
     where: { id: loanRequestId },
@@ -77,7 +83,11 @@ export async function processLoanDecision(
       reference_no: referenceNo,
     };
     console.log("[LoanDecision] Sending payload to Lersha:", lershaPayload);
-    const lershaResult = await sendLoanDecision(lershaPayload);
+    const lershaResult = await sendLoanDecision(lershaPayload, {
+      actorId,
+      entity: "LershaLoanRequest",
+      entityId: loanRequestId,
+    });
     console.log("[LoanDecision] Response from Lersha:", {
       status: lershaResult.status,
       ok: lershaResult.ok,
@@ -108,13 +118,16 @@ export async function processLoanDecision(
   }
 
   await createAuditLog({
-    actorId: "system",
+    actorId,
     action: `LERSHA_LOAN_${decision}`,
     entity: "LershaLoanRequest",
     entityId: loanRequestId,
     details: {
       farmerId: loanRequest.farmer.farmerId,
+      farmerName: loanRequest.farmer.farmerName,
+      productId: loanRequest.productId,
       decision,
+      previousStatus: loanRequest.status,
       comment,
       referenceNo,
       lershaNotified,
